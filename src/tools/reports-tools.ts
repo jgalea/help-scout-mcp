@@ -1089,11 +1089,11 @@ export class ReportsToolHandler extends Injectable {
         params.sites = input.sites.join(',');
       }
 
-      logger.info('Calling Help Scout Reports API for Docs report', { endpoint: '/v2/reports/docs', params });
+      logger.info('Calling Help Scout Reports API for Docs report', { endpoint: '/reports/docs', params });
       
       let response: any;
       try {
-        response = await reportsApiClient.getReport<DocsReportResponse>('/v2/reports/docs', params);
+        response = await reportsApiClient.getReport<DocsReportResponse>('/reports/docs', params);
       } catch (error: any) {
         logger.error('Failed to get docs report', { error: error.message });
         response = null;
@@ -1110,7 +1110,7 @@ export class ReportsToolHandler extends Injectable {
                 message: 'The Help Scout API returned "Unknown URL" for the /v2/reports/docs endpoint.',
                 details: 'This endpoint may not be available in the current Help Scout API version.',
                 troubleshooting: [
-                  '1. The Docs Reports endpoint (/v2/reports/docs) may not exist in the Help Scout API',
+                  '1. The Docs Reports endpoint (/reports/docs) may not exist in the Help Scout API',
                   '2. Your Help Scout plan may not include Docs Reports (requires Plus or Pro plan)',
                   '3. This specific report type might have been deprecated or not yet implemented',
                   '4. Try using other report endpoints like getEmailReport, getChatReport, or getHappinessReport instead'
@@ -1210,8 +1210,8 @@ export class ReportsToolHandler extends Injectable {
         params.viewBy = input.viewBy;
       }
 
-      logger.info('Calling Help Scout Reports API for Chat report', { endpoint: '/v2/reports/chat', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/v2/reports/chat', params);
+      logger.info('Calling Help Scout Reports API for Chat report', { endpoint: '/reports/chat', params });
+      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/chat', params);
 
       return {
         content: [
@@ -1297,8 +1297,8 @@ export class ReportsToolHandler extends Injectable {
         params.viewBy = input.viewBy;
       }
 
-      logger.info('Calling Help Scout Reports API for Email report', { endpoint: '/v2/reports/email', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/v2/reports/email', params);
+      logger.info('Calling Help Scout Reports API for Email report', { endpoint: '/reports/email', params });
+      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/email', params);
 
       return {
         content: [
@@ -1384,8 +1384,8 @@ export class ReportsToolHandler extends Injectable {
         params.viewBy = input.viewBy;
       }
 
-      logger.info('Calling Help Scout Reports API for Phone report', { endpoint: '/v2/reports/phone', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/v2/reports/phone', params);
+      logger.info('Calling Help Scout Reports API for Phone report', { endpoint: '/reports/phone', params });
+      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/phone', params);
 
       return {
         content: [
@@ -1479,8 +1479,8 @@ export class ReportsToolHandler extends Injectable {
         params.officeHours = input.officeHours;
       }
 
-      logger.info('Calling Help Scout Reports API for User report', { endpoint: '/v2/reports/user', params });
-      const response = await reportsApiClient.getReport<UserReportResponse>('/v2/reports/user', params);
+      logger.info('Calling Help Scout Reports API for User report', { endpoint: '/reports/user', params });
+      const response = await reportsApiClient.getReport<UserReportResponse>('/reports/user', params);
 
       return {
         content: [
@@ -1570,8 +1570,8 @@ export class ReportsToolHandler extends Injectable {
         params.viewBy = input.viewBy;
       }
 
-      logger.info('Calling Help Scout Reports API for Company report', { endpoint: '/v2/reports/company', params });
-      const response = await reportsApiClient.getReport<CompanyReportResponse>('/v2/reports/company', params);
+      logger.info('Calling Help Scout Reports API for Company report', { endpoint: '/reports/company', params });
+      const response = await reportsApiClient.getReport<CompanyReportResponse>('/reports/company', params);
 
       return {
         content: [
@@ -1666,8 +1666,8 @@ export class ReportsToolHandler extends Injectable {
       }
 
       // The happiness report endpoint - overall statistics
-      logger.info('Calling Help Scout Reports API for Happiness report', { endpoint: '/v2/reports/happiness', params });
-      const response = await reportsApiClient.getReport<HappinessReportResponse>('/v2/reports/happiness', params);
+      logger.info('Calling Help Scout Reports API for Happiness report', { endpoint: '/reports/happiness', params });
+      const response = await reportsApiClient.getReport<HappinessReportResponse>('/reports/happiness', params);
 
       return {
         content: [
@@ -1767,8 +1767,8 @@ export class ReportsToolHandler extends Injectable {
       }
 
       // The happiness ratings endpoint for individual ratings
-      logger.info('Calling Help Scout Reports API for Happiness ratings', { endpoint: '/v2/reports/happiness/ratings', params });
-      const response = await reportsApiClient.getReport<any>('/v2/reports/happiness/ratings', params);
+      logger.info('Calling Help Scout Reports API for Happiness ratings', { endpoint: '/reports/happiness/ratings', params });
+      const response = await reportsApiClient.getReport<any>('/reports/happiness/ratings', params);
 
       return {
         content: [
