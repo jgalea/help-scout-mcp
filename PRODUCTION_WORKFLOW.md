@@ -128,7 +128,7 @@ gh release create v1.2.1 \
 ```bash
 # 19. Test all deployment artifacts
 npx help-scout-mcp-server@latest --version
-docker pull drewburchfield/help-scout-mcp-server:latest
+docker pull zackkatz/help-scout-mcp-server:latest
 
 # 20. Verify DXT extension in release
 # Download from GitHub releases and test installation

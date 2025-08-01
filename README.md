@@ -1,16 +1,18 @@
 # Help Scout MCP Server
 
 [![npm version](https://badge.fury.io/js/help-scout-mcp-server.svg)](https://badge.fury.io/js/help-scout-mcp-server)
-[![Docker](https://img.shields.io/docker/v/drewburchfield/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/drewburchfield/help-scout-mcp-server)
+[![Docker](https://img.shields.io/docker/v/zackkatz/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/zackkatz/help-scout-mcp-server)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://typescriptlang.org/)
 
 > **Help Scout MCP Server** - Connect Claude and other AI assistants to your Help Scout data with enterprise-grade security and advanced search capabilities.
 
+> **Note**: This is a fork of the original [help-scout-mcp-server](https://github.com/drewburchfield/help-scout-mcp-server) by Drew Burchfield.
+
 ## 📖 Table of Contents
 
 - [🎉 What's New](#-whats-new-in-v120)
-- [⚡ Quick Start](#quick-start) 
+- [⚡ Quick Start](#quick-start)
 - [🔑 API Credentials](#getting-your-api-credentials)
 - [🛠️ Tools & Capabilities](#tools--capabilities)
 - [⚙️ Configuration](#configuration-options)
@@ -19,13 +21,22 @@
 
 ## 🎉 What's New in v1.3.0
 
-- **🆙 MCP SDK v1.17.4**: Latest Model Context Protocol SDK with enhanced compatibility  
-- **🎯 DXT Format Compliance**: Fixed manifest format to follow official Anthropic specification
-- **📝 Enhanced Tool Guidance**: Clear distinction between listing (`searchConversations`) vs content-based searches (`comprehensiveConversationSearch`)
-- **🔧 Improved Search UX**: Better tool descriptions prevent empty search term confusion
-- **🛠️ Enhanced Version Management**: Automated version bump script for all 6 version-sensitive files
-- **✅ Test Reliability**: Fixed async test handling and improved timeout management
-- **🔒 Production Ready**: Complete release workflow with DXT building and GitHub releases
+- **📚 Full Docs API Integration**: Complete support for Help Scout Docs API
+  - Browse and search documentation sites, collections, categories, and articles
+  - Read full article content with PII protection
+  - Update articles, collections, and categories (with safety controls)
+- **📈 Complete Reports API**: All Help Scout Reports endpoints implemented
+  - Conversation reports (chat, email, phone) with detailed metrics
+  - User/team performance reports with productivity analytics
+  - Company-wide reports with customer and team insights
+  - Happiness reports with satisfaction scores and feedback
+  - Docs analytics with article views and visitor metrics
+- **🎯 DXT Extension**: One-click installation for Claude Desktop
+- **🔧 Clear Environment Variables**: `HELPSCOUT_CLIENT_ID` and `HELPSCOUT_CLIENT_SECRET`
+- **⚡ Connection Pooling**: Improved performance with HTTP connection reuse
+- **🛡️ Enhanced Security**: Comprehensive input validation and API constraints
+- **🔄 Dependency Injection**: Cleaner architecture with ServiceContainer
+- **🧪 Comprehensive Testing**: 69%+ branch coverage with reliable tests
 
 ## Prerequisites
 
@@ -42,7 +53,7 @@
 
 **Easiest setup using [DXT (Desktop Extensions)](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
 
-1. Download the latest [`.dxt` file from releases](https://github.com/drewburchfield/help-scout-mcp-server/releases)
+1. Download the latest [`.dxt` file from releases](https://github.com/zackkatz/help-scout-mcp-server/releases)
 2. Double-click to install in Claude Desktop
 3. Enter your Help Scout OAuth2 Client ID and Client Secret when prompted
 4. Start using immediately!
@@ -69,7 +80,7 @@
 ```bash
 docker run -e HELPSCOUT_CLIENT_ID="your-client-id" \
   -e HELPSCOUT_CLIENT_SECRET="your-client-secret" \
-  drewburchfield/help-scout-mcp-server
+  zackkatz/help-scout-mcp-server
 ```
 
 ### 💻 Option 4: Command Line
@@ -93,14 +104,28 @@ npx help-scout-mcp-server
 
 ### 🔐 **Alternative: Personal Access Token**
 
-1. Go to **Help Scout** → **Your Profile** → **API Keys**  
+1. Go to **Help Scout** → **Your Profile** → **API Keys**
 2. Create a new **Personal Access Token**
 3. Use in configuration: `HELPSCOUT_API_KEY=Bearer your-token-here`
+
+### 📚 **For Docs API Access**
+
+1. Go to **[Help Scout Docs Settings](https://secure.helpscout.net/settings/docs/code)**
+2. Generate a **Docs API Key**
+3. Use in configuration: `HELPSCOUT_DOCS_API_KEY=your-docs-api-key`
+
+**Important Notes:**
+- The Docs API key is separate from your main Help Scout API credentials
+- Ensure Help Scout Docs is enabled for your account
+- You must have at least one Docs site created to access documentation
+- Reports API (for analytics) requires Plus/Pro plan
 
 ## Features
 
 - **🔍 Advanced Search**: Multi-status conversation search, content filtering, boolean queries
-- **📊 Smart Analysis**: Conversation summaries, thread retrieval, inbox monitoring  
+- **📊 Smart Analysis**: Conversation summaries, thread retrieval, inbox monitoring
+- **📚 Docs Integration**: Full Help Scout Docs API support for articles, collections, and categories
+- **📈 Comprehensive Reports**: All Help Scout Reports API endpoints - chat, email, phone, user, company, happiness, and docs analytics
 - **🔒 Enterprise Security**: PII redaction, secure token handling, comprehensive audit logs
 - **⚡ High Performance**: Built-in caching, rate limiting, automatic retry logic
 - **🎯 Easy Integration**: Works with Claude Desktop, Cursor, Continue.dev, and more
@@ -124,14 +149,49 @@ npx help-scout-mcp-server
 | `getThreads` | Complete conversation message history | Full context analysis |
 | `getServerTime` | Current server timestamp | Time-relative searches |
 
-### Resources (Dynamic Discovery)
+### Documentation Tools
 
+| Tool | Description | Use Case |
+|------|-------------|----------|
+| `listDocsSites` | List all documentation sites with NLP filtering | Discover available sites |
+| `listDocsCollections` | List collections with site NLP resolution | Browse documentation structure |
+| `listDocsCategories` | List categories in a collection | Navigate collection organization |
+| `listDocsArticlesByCollection` | List articles in a collection (sort by popularity) | Find articles by collection |
+| `listDocsArticlesByCategory` | List articles in a category (sort by popularity) | Find articles by category |
+| `getDocsArticle` | Get full article content | Read complete documentation |
+| `updateDocsArticle` | Update article content/properties | Modify documentation |
+| `updateDocsCollection` | Update collection properties | Manage collections |
+| `updateDocsCategory` | Update category properties | Manage categories |
+| `getTopDocsArticles` | Get most popular articles by views with NLP support | Find most-read documentation |
+| `listAllDocsCollections` | List all available collections across sites | Discover available content |
+| `getSiteCollections` | Get collections for a specific site using NLP | Find site-specific collections |
+
+### Reports & Analytics Tools
+
+| Tool | Description | Requirements |
+|------|-------------|-------------|
+| `getTopArticles` | Get top most viewed docs articles sorted by popularity | Works with all plans |
+| `getChatReport` | Chat conversation analytics with volume, response times, and resolution metrics | Plus/Pro plan required |
+| `getEmailReport` | Email conversation analytics with volume, response times, and resolution metrics | Plus/Pro plan required |
+| `getPhoneReport` | Phone conversation analytics with call volume and duration metrics | Plus/Pro plan required |
+| `getUserReport` | User/team performance report with productivity metrics and happiness scores | Plus/Pro plan required |
+| `getCompanyReport` | Company-wide analytics with customer volume and team performance | Plus/Pro plan required |
+| `getHappinessReport` | Customer satisfaction scores and feedback analysis | Plus/Pro plan required |
+| `getDocsReport` | Comprehensive docs analytics report with article views and visitor metrics | Plus/Pro plan required |
+
+### Resources
+
+#### Conversations
 - `helpscout://inboxes` - List all accessible inboxes
-- `helpscout://conversations` - Search conversations with filters  
+- `helpscout://conversations` - Search conversations with filters
 - `helpscout://threads` - Get thread messages for a conversation
 - `helpscout://clock` - Current server timestamp
 
-> **📝 Note**: Resources are discovered dynamically at runtime through MCP protocol, not declared in the DXT manifest.
+#### Documentation
+- `helpscout-docs://sites` - List all documentation sites
+- `helpscout-docs://collections` - List collections with filtering
+- `helpscout-docs://categories` - List categories in a collection
+- `helpscout-docs://articles` - Get articles with full content
 
 ## Search Examples
 
@@ -184,6 +244,71 @@ searchConversations({
 })
 ```
 
+### Documentation Examples
+```javascript
+// List all documentation sites
+listDocsSites({
+  page: 1
+})
+
+// Get articles in a collection
+listDocsArticlesByCollection({
+  collectionId: "123456",
+  status: "published",
+  sort: "popularity"
+})
+
+// Get full article content
+getDocsArticle({
+  articleId: "789012"
+})
+
+// Update an article
+updateDocsArticle({
+  articleId: "789012",
+  name: "Updated Article Title",
+  text: "<p>New article content</p>"
+})
+```
+
+### Reports Examples
+```javascript
+// Get email conversation report with comparison
+getEmailReport({
+  start: "2024-01-01T00:00:00Z",
+  end: "2024-01-31T23:59:59Z",
+  previousStart: "2023-12-01T00:00:00Z",
+  previousEnd: "2023-12-31T23:59:59Z",
+  mailboxes: ["123456"],
+  viewBy: "week"
+})
+
+// Get user performance report
+getUserReport({
+  start: "2024-01-01T00:00:00Z",
+  end: "2024-01-31T23:59:59Z",
+  user: "789012",
+  types: ["email", "chat"],
+  officeHours: true
+})
+
+// Get happiness ratings with filters
+getHappinessReport({
+  start: "2024-01-01T00:00:00Z",
+  end: "2024-01-31T23:59:59Z",
+  rating: ["great", "okay"],
+  mailboxes: ["123456"],
+  viewBy: "day"
+})
+
+// Get company-wide analytics
+getCompanyReport({
+  start: "2024-01-01T00:00:00Z",
+  end: "2024-01-31T23:59:59Z",
+  viewBy: "month"
+})
+```
+
 ## Configuration Options
 
 | Variable | Description | Default |
@@ -195,7 +320,55 @@ searchConversations({
 | `ALLOW_PII` | Include message content in responses | `false` |
 | `CACHE_TTL_SECONDS` | Cache duration for API responses | `300` |
 | `LOG_LEVEL` | Logging verbosity (`error`, `warn`, `info`, `debug`) | `info` |
+| `HELPSCOUT_DOCS_API_KEY` | API key for Help Scout Docs access | Required for Docs |
+| `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint | `https://docsapi.helpscout.net/v1/` |
+| `HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID` | Default collection ID for queries | Optional |
+| `HELPSCOUT_DEFAULT_DOCS_SITE_ID` | Default Docs site ID for queries | Optional |
+| `HELPSCOUT_ALLOW_DOCS_DELETE` | Enable Docs deletion operations | `false` |
 
+
+## Smart Site & Collection Resolution
+
+The MCP server includes intelligent natural language processing for Help Scout Docs sites and collections:
+
+### Natural Language Queries
+
+#### Collections
+```javascript
+// These all work to find GravityKit articles:
+getTopDocsArticles({ query: "GravityKit docs" })
+getTopDocsArticles({ query: "top GravityKit articles" })
+getTopDocsArticles({ query: "What are the most popular GravityKit help articles?" })
+```
+
+#### Sites
+```javascript
+// Natural language site queries:
+listDocsCollections({ query: "GravityKit" })  // Find GravityKit site
+getSiteCollections({ query: "TrustedLogin site" })  // Get TrustedLogin collections
+listDocsSites({ query: "gravity" })  // Find sites matching "gravity"
+```
+
+### Matching Algorithm
+The system matches sites and collections using:
+1. **Direct name match** - Exact site/collection name (100% confidence)
+2. **Company/Site name match** - Company name like "GravityKit" (80-90% confidence)
+3. **Subdomain match** - Matches subdomain patterns (70-80% confidence)
+4. **CNAME match** - Custom domain matching (70% confidence)
+5. **Partial word match** - Intelligent fuzzy matching (variable confidence)
+
+### Default Configuration
+Set default site and collection for queries without specific context:
+```bash
+export HELPSCOUT_DEFAULT_DOCS_SITE_ID="your-site-id"
+export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
+```
+
+### Discovery Tools
+- Use `listDocsSites` to see all Docs sites (with optional NLP filtering)
+- Use `listAllDocsCollections` to see all available collections across sites
+- Use `getSiteCollections` to get collections for a specific site using NLP
+- Sites and collections are automatically cached for performance
 
 ## Compatibility
 
@@ -218,11 +391,20 @@ searchConversations({
 - **⚡ Rate Limiting**: Built-in retry logic with exponential backoff
 - **🏢 Enterprise Ready**: SOC2 compliant deployment options
 
+## Changelog
+
+### v1.3.0 (2025-08-01)
+- Fixed Reports API response unwrapping for `getCompanyReport`, `getEmailReport`, `getChatReport`, `getPhoneReport`, `getUserReport`
+- Fixed `getHappinessReport` endpoint URL to use `/v2/reports/happiness/overall`
+- Fixed `listDocsSites` response structure to properly handle sites array
+- Added Reports API client for proper response handling
+- Improved error messages for Reports API endpoints
+
 ## Development
 
 ```bash
 # Quick start
-git clone https://github.com/drewburchfield/help-scout-mcp-server.git
+git clone https://github.com/zackkatz/help-scout-mcp-server.git
 cd help-scout-mcp-server
 npm install && npm run build
 
@@ -277,7 +459,7 @@ LOG_LEVEL=debug npx help-scout-mcp-server
 ### Getting Help
 
 If you're still having issues:
-1. Check [existing issues](https://github.com/drewburchfield/help-scout-mcp-server/issues)
+1. Check [existing issues](https://github.com/zackkatz/help-scout-mcp-server/issues)
 2. Enable debug logging and share relevant logs
 3. Include your configuration (without credentials!)
 
@@ -288,7 +470,7 @@ We welcome contributions! Here's how to get started:
 ### 🚀 Quick Development Setup
 
 ```bash
-git clone https://github.com/drewburchfield/help-scout-mcp-server.git
+git clone https://github.com/zackkatz/help-scout-mcp-server.git
 cd help-scout-mcp-server
 npm install
 ```
@@ -315,7 +497,7 @@ npm run dev
 ### 📋 Before Submitting
 
 - ✅ All tests pass (`npm test`)
-- ✅ Type checking passes (`npm run type-check`) 
+- ✅ Type checking passes (`npm run type-check`)
 - ✅ Linting passes (`npm run lint`)
 - ✅ Add tests for new features
 - ✅ Update documentation if needed
@@ -338,8 +520,8 @@ We'd love to hear your ideas! Please open an issue describing:
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/drewburchfield/help-scout-mcp-server/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/drewburchfield/help-scout-mcp-server/discussions)
+- **Issues**: [GitHub Issues](https://github.com/zackkatz/help-scout-mcp-server/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/zackkatz/help-scout-mcp-server/discussions)
 - **NPM Package**: [help-scout-mcp-server](https://www.npmjs.com/package/help-scout-mcp-server)
 
 ## License
@@ -348,4 +530,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Need help?** [Open an issue](https://github.com/drewburchfield/help-scout-mcp-server/issues) or check our [documentation](https://github.com/drewburchfield/help-scout-mcp-server/wiki).
+**Need help?** [Open an issue](https://github.com/zackkatz/help-scout-mcp-server/issues) or check our [documentation](https://github.com/zackkatz/help-scout-mcp-server/wiki).
