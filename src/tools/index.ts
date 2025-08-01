@@ -910,7 +910,8 @@ export class ToolHandler {
    */
   private calculateTimeRange(timeframeDays: number): string {
     const timeRange = new Date();
-    timeRange.setDate(timeRange.getDate() - timeframeDays);
+    // Use setTime to properly handle large day offsets
+    timeRange.setTime(timeRange.getTime() - (timeframeDays * 24 * 60 * 60 * 1000));
     return timeRange.toISOString();
   }
 

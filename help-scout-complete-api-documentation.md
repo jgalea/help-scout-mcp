@@ -6,6 +6,21 @@
 2. [Authentication](#authentication)
 3. [Rate Limits & General Specifications](#rate-limits--general-specifications)
 4. [Mailbox API 2.0 Documentation](#mailbox-api-20-documentation)
+   - [Conversations](#1-conversations)
+   - [Customers](#2-customers)
+   - [Teams](#3-teams)
+   - [Users](#4-users)
+   - [Mailboxes](#5-mailboxes)
+   - [Threads](#6-threads)
+   - [Tags](#7-tags)
+   - [Attachments](#8-attachments)
+   - [Custom Fields](#9-custom-fields)
+   - [Workflows](#10-workflows)
+   - [Webhooks](#11-webhooks)
+   - [Saved Replies](#12-saved-replies)
+   - [Customer Properties](#13-customer-properties)
+   - [Satisfaction Ratings](#14-satisfaction-ratings)
+   - [Reports](#15-reports)
 5. [Docs API v1 Documentation](#docs-api-v1-documentation)
 6. [SDK Resources](#sdk-resources)
 7. [Best Practices](#best-practices)
@@ -294,19 +309,29 @@ curl --user API_KEY:X https://docsapi.helpscout.net/v1/collections
 **Endpoint**: `GET /v2/conversations`
 
 **Query Parameters**:
-- `mailbox`: Mailbox ID filter
-- `folder`: Folder ID filter  
-- `status`: `active|closed|pending|spam`
-- `assignee`: User ID filter
+- `mailbox`: Mailbox ID filter (comma-separated for multiple)
+- `folder`: Folder ID filter
+- `status`: `active|closed|pending|spam|all` (default: all)
+- `assignee`: User ID filter (specific user)
+- `assigned_to`: Alternative assignee filter
+- `tag`: Filter by conversation tags
 - `customerEmail`: Customer email filter
 - `customerName`: Customer name filter
-- `modifiedSince`: ISO8601 date
-- `sortField`: `number|subject|updatedAt|customerName`
-- `sortOrder`: `asc|desc`
-- `query`: Search query
-- `embed`: `threads`
-- `page`: Page number
-- `size`: Page size (max 50)
+- `modifiedSince`: ISO8601 date for incremental updates
+- `sortField`: `number|subject|updatedAt|customerName|createdAt|customerEmail|status`
+- `sortOrder`: `asc|desc` (default: desc)
+- `query`: Advanced search query with operators
+  - Subject searches: `subject:"issue with login"`
+  - Tag searches: `tag:urgent`
+  - Date ranges: `createdAt:[2020-01-01 TO 2020-12-31]`
+  - Email searches: `email:user@example.com`
+  - Body text: `body:"error message"`
+  - NOT operator: `NOT tag:spam`
+  - Combined: `tag:urgent AND status:active`
+- `embed`: `threads` to include thread data
+- `page`: Page number (default: 1)
+- `size`: Page size (default: 25, max: 50)
+- `customFieldsByIds`: Filter by custom field values
 
 **Response**: `200 OK`
 ```json
@@ -484,15 +509,20 @@ Headers include: `Resource-ID` and `Location`
 **Endpoint**: `GET /v2/customers`
 
 **Query Parameters**:
-- `firstName`: Filter by first name
-- `lastName`: Filter by last name
-- `email`: Filter by email address
-- `modifiedSince`: ISO8601 date
-- `sortField`: `firstName|lastName|email|modifiedAt`
-- `sortOrder`: `asc|desc`
-- `query`: Search query
-- `page`: Page number
-- `size`: Page size (max 50)
+- `mailbox`: Filter customers from specific mailbox ID
+- `firstName`: Filter by first name (exact match)
+- `lastName`: Filter by last name (exact match)
+- `email`: Filter by email address (exact match)
+- `modifiedSince`: ISO8601 date for incremental updates
+- `sortField`: `score|firstName|lastName|email|modifiedAt` (default: score)
+- `sortOrder`: `asc|desc` (default: desc)
+- `query`: Advanced search query with complex syntax
+  - Name searches: `(firstName:"John")`
+  - Email searches: `(email:"john@example.com")`
+  - Compound searches: `(firstName:"John" AND lastName:"Appleseed")`
+  - Organization: `(organization:"Acme Corp")`
+- `page`: Page number (default: 1)
+- `size`: Page size (default: 50, max: 50)
 
 ##### Update Customer
 **Endpoint**: `PATCH /v2/customers/{id}`
@@ -515,6 +545,9 @@ Supports atomic updates of entire customer object including all entries.
 ##### List Teams
 **Endpoint**: `GET /v2/teams`
 
+**Query Parameters**:
+- `page`: Page number for pagination
+
 **Response**: `200 OK`
 ```json
 {
@@ -523,9 +556,25 @@ Supports atomic updates of entire customer object including all entries.
       {
         "id": 10,
         "name": "Support Team",
-        "memberCount": 5
+        "memberCount": 5,
+        "initials": "ST",
+        "mention": "support",
+        "timezone": "America/New_York",
+        "photoUrl": "https://example.com/team-photo.jpg",
+        "createdAt": "2020-01-01T12:00:00Z",
+        "updatedAt": "2020-01-02T12:00:00Z"
       }
     ]
+  },
+  "page": {
+    "size": 50,
+    "totalElements": 5,
+    "totalPages": 1,
+    "number": 1
+  },
+  "_links": {
+    "first": {"href": "/v2/teams?page=1"},
+    "last": {"href": "/v2/teams?page=1"}
   }
 }
 ```
@@ -593,27 +642,141 @@ Supports atomic updates of entire customer object including all entries.
 **Endpoint**: `GET /v2/users`
 
 **Query Parameters**:
-- `email`: Filter by email
-- `mailbox`: Filter by mailbox ID
-- `page`: Page number
-- `size`: Page size
+- `email`: Filter by exact email address
+- `mailbox`: Filter by specific mailbox ID
+- `page`: Page number for pagination
+- `size`: Page size (default: 50)
+
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "users": [
+      {
+        "id": 123,
+        "firstName": "John",
+        "lastName": "Doe",
+        "email": "john@company.com",
+        "role": "admin|user|owner",
+        "timezone": "America/New_York",
+        "photoUrl": "https://example.com/photo.jpg",
+        "createdAt": "2020-01-01T12:00:00Z",
+        "updatedAt": "2020-01-02T12:00:00Z",
+        "type": "user",
+        "mention": "john",
+        "initials": "JD",
+        "jobTitle": "Support Agent",
+        "phone": "+1-555-123-4567",
+        "alternateEmails": ["john.doe@company.com"]
+      }
+    ]
+  },
+  "page": {
+    "size": 50,
+    "totalElements": 25,
+    "totalPages": 1,
+    "number": 1
+  }
+}
+```
 
 ##### Get User
 **Endpoint**: `GET /v2/users/{id}`
 
+**Response**: `200 OK`
+```json
+{
+  "id": 123,
+  "firstName": "John",
+  "lastName": "Doe",
+  "email": "john@company.com",
+  "role": "admin",
+  "timezone": "America/New_York",
+  "photoUrl": "https://example.com/photo.jpg",
+  "createdAt": "2020-01-01T12:00:00Z",
+  "updatedAt": "2020-01-02T12:00:00Z",
+  "type": "user",
+  "mention": "john",
+  "initials": "JD",
+  "jobTitle": "Support Agent",
+  "phone": "+1-555-123-4567",
+  "alternateEmails": ["john.doe@company.com"]
+}
+```
+
 ##### Get Current User
 **Endpoint**: `GET /v2/users/me`
+
+**Response**: Same format as Get User, returns currently authenticated user's information.
 
 #### 5. Mailboxes
 
 ##### List Mailboxes
 **Endpoint**: `GET /v2/mailboxes`
 
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "mailboxes": [
+      {
+        "id": 123,
+        "name": "Support",
+        "slug": "support",
+        "email": "support@company.com",
+        "createdAt": "2020-01-01T12:00:00Z",
+        "updatedAt": "2020-01-02T12:00:00Z"
+      }
+    ]
+  }
+}
+```
+
 ##### Get Mailbox
 **Endpoint**: `GET /v2/mailboxes/{id}`
 
+**Query Parameters**:
+- `embed`: Comma-separated values (`folders`, `fields`)
+
+**Response**: `200 OK`
+```json
+{
+  "id": 123,
+  "name": "Support",
+  "slug": "support",
+  "email": "support@company.com",
+  "createdAt": "2020-01-01T12:00:00Z",
+  "updatedAt": "2020-01-02T12:00:00Z",
+  "folders": [
+    {
+      "id": 456,
+      "name": "Mine",
+      "type": "assigned",
+      "userId": 789
+    }
+  ]
+}
+```
+
 ##### List Mailbox Folders
 **Endpoint**: `GET /v2/mailboxes/{id}/folders`
+
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "folders": [
+      {
+        "id": 456,
+        "name": "Mine",
+        "type": "assigned",
+        "userId": 789,
+        "updatedAt": "2020-01-01T12:00:00Z"
+      }
+    ]
+  }
+}
+```
 
 #### 6. Threads
 
@@ -656,6 +819,48 @@ Supports atomic updates of entire customer object including all entries.
 
 ##### List Tags
 **Endpoint**: `GET /v2/tags`
+
+**Query Parameters**:
+- `page`: Page number for pagination
+- `size`: Page size (max 50)
+
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "tags": [
+      {
+        "id": 123456793,
+        "slug": "urgent",
+        "name": "Urgent",
+        "color": "red"
+      }
+    ]
+  },
+  "page": {
+    "size": 50,
+    "totalElements": 25,
+    "totalPages": 1,
+    "number": 1
+  }
+}
+```
+
+##### Get Tag
+**Endpoint**: `GET /v2/tags/{tagId}`
+
+**Response**: `200 OK`
+```json
+{
+  "id": 123456793,
+  "slug": "urgent",
+  "name": "Urgent",
+  "color": "red",
+  "_links": {
+    "self": {"href": "/v2/tags/123456793"}
+  }
+}
+```
 
 #### 8. Attachments
 
@@ -712,11 +917,79 @@ Supports atomic updates of entire customer object including all entries.
 ##### List Workflows
 **Endpoint**: `GET /v2/workflows`
 
+**Query Parameters**:
+- `mailboxId`: Filter workflows by specific mailbox ID
+- `type`: Filter by workflow type (`manual|automatic`)
+- `page`: Page number for pagination
+
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "workflows": [
+      {
+        "id": 12345,
+        "mailboxId": 123,
+        "type": "manual",
+        "status": "active",
+        "order": 1,
+        "name": "Close and Tag Spam",
+        "createdAt": "2020-01-01T12:00:00Z",
+        "modifiedAt": "2020-01-02T12:00:00Z"
+      }
+    ]
+  },
+  "page": {
+    "size": 25,
+    "totalElements": 10,
+    "totalPages": 1,
+    "number": 1
+  }
+}
+```
+
+**Workflow Status Values**:
+- `active`: Workflow is enabled and running
+- `inactive`: Workflow is disabled
+- `invalid`: Workflow configuration is invalid
+
+**Note**: API workflows are always manual type. Automatic workflows are managed within the Help Scout application.
+
 ##### Update Workflow Status
 **Endpoint**: `PATCH /v2/workflows/{id}`
 
+**Request Body**:
+```json
+{
+  "status": "active"
+}
+```
+
+**Valid Status Values**: `active|inactive`
+
+**Response**: `204 No Content`
+
 ##### Run Manual Workflow
 **Endpoint**: `POST /v2/workflows/{id}/run`
+
+**Request Body**:
+```json
+{
+  "conversations": [12345, 67890, 54321]
+}
+```
+
+**Field Details**:
+- `conversations`: Array of conversation IDs to run the workflow on
+- Maximum conversations per request: Limited by API constraints
+- Large batches are automatically split into multiple requests
+
+**Response**: `201 Created`
+
+**Usage Notes**:
+- Only works with manual workflows
+- Conversations must be accessible to the authenticated user
+- Invalid conversation IDs are skipped without error
 
 #### 11. Webhooks
 
@@ -737,19 +1010,39 @@ Supports atomic updates of entire customer object including all entries.
 ```
 
 **Available Events**:
-- `conversation.created`
-- `conversation.updated` 
-- `conversation.deleted`
-- `conversation.assigned`
-- `conversation.unassigned`
-- `conversation.moved`
-- `conversation.status`
-- `conversation.tags`
-- `conversation.merged`
-- `customer.created`
-- `customer.updated`
-- `customer.deleted`
-- `satisfaction.ratings`
+
+**Conversation Events**:
+- `convo.assigned`: Conversation assigned to user
+- `convo.created`: New conversation created
+- `convo.customer.reply.created`: Customer replied to conversation
+- `convo.deleted`: Conversation deleted
+- `convo.merged`: Conversation merged with another
+- `convo.moved`: Conversation moved to different mailbox
+- `convo.note.created`: Note added to conversation
+- `convo.status`: Conversation status changed
+- `convo.tags`: Conversation tags updated
+- `convo.agent.reply.created`: Agent replied to conversation
+- `convo.unassigned`: Conversation unassigned
+
+**Customer Events**:
+- `customer.created`: New customer created
+- `customer.updated`: Customer information updated
+- `customer.deleted`: Customer deleted
+
+**Rating Events**:
+- `satisfaction.ratings`: Satisfaction rating submitted
+
+**Chat Events**:
+- `beacon.chat.created`: New chat conversation started via Beacon
+
+**Field Details**:
+- `events`: Array of event types (required)
+- `url`: Webhook callback URL (required, must be HTTPS)
+- `secret`: Webhook signature secret (required, max 40 characters)
+- `label`: Descriptive webhook name (optional)
+- `payloadVersion`: Payload format version (optional, default: \"V2\")
+- `notification`: Boolean flag for notification mode (optional)
+- `mailboxIds`: Array of mailbox IDs to filter events (optional)
 
 **Response**: `201 Created`
 
@@ -762,7 +1055,166 @@ Supports atomic updates of entire customer object including all entries.
 ##### Delete Webhook
 **Endpoint**: `DELETE /v2/webhooks/{id}`
 
-#### 12. Reports
+#### 12. Saved Replies
+
+##### Create Saved Reply
+**Endpoint**: `POST /v2/mailboxes/{mailboxId}/saved-replies`
+
+**Request Body**:
+```json
+{
+  "name": "Sale: Now On",
+  "text": "Hi, thanks for reaching out.<br /><br />We do indeed have a sale going on right now...",
+  "chatText": "Hi, thanks for reaching out.\n\nWe do indeed have a sale going on right now..."
+}
+```
+
+**Field Details**:
+- `name` (String, Required): Name of the saved reply
+- `text` (String, Optional): HTML-formatted text for email replies
+- `chatText` (String, Optional): Plain text version for chat conversations
+
+**Response**: `201 Created`
+
+##### List Saved Replies
+**Endpoint**: `GET /v2/mailboxes/{mailboxId}/saved-replies`
+
+**Query Parameters**:
+- `page`: Page number for pagination
+- `size`: Page size (max 50)
+
+**Response**: `200 OK`
+```json
+{
+  "_embedded": {
+    "saved-replies": [
+      {
+        "id": 123,
+        "name": "Sale: Now On",
+        "text": "Hi, thanks for reaching out.<br /><br />We do indeed have a sale...",
+        "chatText": "Hi, thanks for reaching out.\n\nWe do indeed have a sale...",
+        "createdAt": "2020-01-01T12:00:00Z",
+        "updatedAt": "2020-01-02T12:00:00Z"
+      }
+    ]
+  },
+  "page": {
+    "size": 25,
+    "totalElements": 10,
+    "totalPages": 1,
+    "number": 1
+  }
+}
+```
+
+##### Get Saved Reply
+**Endpoint**: `GET /v2/mailboxes/{mailboxId}/saved-replies/{id}`
+
+##### Update Saved Reply
+**Endpoint**: `PUT /v2/mailboxes/{mailboxId}/saved-replies/{id}`
+
+##### Delete Saved Reply
+**Endpoint**: `DELETE /v2/mailboxes/{mailboxId}/saved-replies/{id}`
+
+#### 13. Customer Properties
+
+##### Create Customer Property Definition
+**Endpoint**: `POST /v2/customer-properties`
+
+**Request Body**:
+```json
+{
+  "type": "dropdown",
+  "slug": "plan",
+  "name": "Plan",
+  "options": [
+    {"id": "556cca5f-1afc-48ef-8323-b88b55808404", "label": "Standard"},
+    {"id": "1313b25a-1150-49a4-8514-5b31f37e427f", "label": "Plus"},
+    {"id": "f2cbc0ee-95ea-4ef2-82d3-e357dc650989", "label": "Company"}
+  ]
+}
+```
+
+**Field Details**:
+- `type` (Required): `number|text|url|date|dropdown`
+- `slug` (Required): Unique identifier (1-100 chars, alphanumeric, hyphens, underscores)
+- `name` (Required): Display name for the property
+- `options` (Optional): Required for dropdown type only (max 100 options)
+  - `label` (Required): Option display text (max 255 chars)
+  - `id` (Optional): UUID (auto-generated if not provided)
+
+**Limitations**:
+- Maximum 50 customer property definitions per company
+- Reserved slugs: 'email', 'name', 'company', 'jobTitle'
+
+**Response**: `201 Created`
+
+##### List Customer Property Definitions
+**Endpoint**: `GET /v2/customer-properties`
+
+##### Get Customer Property Definition
+**Endpoint**: `GET /v2/customer-properties/{id}`
+
+##### Update Customer Property Definition
+**Endpoint**: `PUT /v2/customer-properties/{id}`
+
+##### Delete Customer Property Definition
+**Endpoint**: `DELETE /v2/customer-properties/{id}`
+
+#### 14. Satisfaction Ratings
+
+##### Get Satisfaction Rating
+**Endpoint**: `GET /v2/ratings/{ratingId}`
+
+**Response**: `200 OK`
+```json
+{
+  "id": 12345,
+  "threadId": 67890,
+  "conversationId": 54321,
+  "rating": "great",
+  "comments": "Very helpful support!",
+  "createdAt": "2020-01-01T12:00:00Z",
+  "user": {
+    "id": 123,
+    "firstName": "Agent",
+    "lastName": "Smith",
+    "email": "agent@company.com"
+  },
+  "customer": {
+    "id": 456,
+    "firstName": "John",
+    "lastName": "Doe",
+    "email": "john@example.com"
+  },
+  "_links": {
+    "self": {"href": "/v2/ratings/12345"},
+    "conversation": {"href": "/v2/conversations/54321"},
+    "thread": {"href": "/v2/conversations/54321/threads/67890"}
+  }
+}
+```
+
+**Rating Types**:
+- `great`: Positive rating
+- `okay`: Neutral rating  
+- `not_good`: Negative rating
+- `unknown`: Rating not provided
+
+##### List Satisfaction Ratings
+**Endpoint**: `GET /v2/ratings`
+
+**Query Parameters**:
+- `conversationId`: Filter by conversation ID
+- `userId`: Filter by user ID
+- `customerId`: Filter by customer ID
+- `rating`: Filter by rating type (`great|okay|not_good|unknown`)
+- `start`: Start date (ISO8601)
+- `end`: End date (ISO8601)
+- `page`: Page number
+- `size`: Page size (max 50)
+
+#### 15. Reports
 
 Help Scout provides comprehensive reporting capabilities across multiple categories:
 
@@ -821,14 +1273,20 @@ Help Scout provides comprehensive reporting capabilities across multiple categor
 - **Endpoint**: `GET /v2/reports/docs`
 
 **Parameters for All Reports**:
-- `start`: Start date (ISO8601)
-- `end`: End date (ISO8601)
-- `previousStart`: Previous period start (optional)
-- `previousEnd`: Previous period end (optional)
-- `mailboxes`: Comma-separated mailbox IDs
-- `tags`: Comma-separated tag IDs
-- `types`: Conversation types filter
-- `folders`: Folder IDs filter
+- `start`: Start date (ISO8601) - Required
+- `end`: End date (ISO8601) - Required
+- `previousStart`: Previous period start (optional, for comparison)
+- `previousEnd`: Previous period end (optional, for comparison)
+- `mailboxes`: Comma-separated mailbox IDs (optional filter)
+- `tags`: Comma-separated tag IDs (optional filter)
+- `types`: Conversation types filter (`email|chat|phone`, comma-separated)
+- `folders`: Folder IDs filter (comma-separated)
+- `officeHours`: Boolean to consider office hours (optional, defaults to false)
+
+**Report Availability**:
+- All reporting endpoints require **Plus or Pro** Help Scout plans
+- OAuth authentication required
+- Rate limiting applies to all report requests
 
 **Response Format**:
 ```json
@@ -1434,19 +1892,43 @@ curl --user API_KEY:X "https://docsapi.helpscout.net/v1/sites?page=2"
 
 ### Community SDKs
 
+#### PHP (Most Comprehensive)
+- **helpscout/api** (Official PHP SDK)
+  - GitHub: https://github.com/helpscout/helpscout-api-php
+  - Version: 3.2.0+
+  - **Supported Endpoints**:
+    - ✅ Conversations (full CRUD + advanced operations)
+    - ✅ Customers (full CRUD)
+    - ✅ Users (read operations)
+    - ✅ Teams (read operations)
+    - ✅ Mailboxes (read operations)
+    - ✅ Tags (read operations)
+    - ✅ Threads (full CRUD)
+    - ✅ Attachments (full CRUD)
+    - ✅ Webhooks (full CRUD)
+    - ✅ Workflows (list, run, update status)
+    - ✅ Chats (read operations)
+    - ✅ Customer Entry Management
+    - ✅ Comprehensive Reports (all categories)
+  - **Missing Endpoints**:
+    - ❌ Saved Replies management
+    - ❌ Customer Properties definitions
+    - ❌ Individual Ratings endpoints
+  - **Features**: OAuth 2.0, HAL+JSON, Pagination, Error handling
+
 #### Node.js
 - **helpscout-mailbox-api** by turakvlad
   - GitHub: https://github.com/turakvlad/helpscout-mailbox-api
-  - Support: Mailbox API 2.0
+  - Support: Mailbox API 2.0 (basic coverage)
 
 - **HelpScout SDK** by shaun3141
   - GitHub: https://github.com/shaun3141/HelpScout
-  - Support: Mailbox API 2.0
+  - Support: Mailbox API 2.0 (partial coverage)
 
 #### .NET
 - **HelpScoutSharp** by Wish-Org/better-reports
   - GitHub: https://github.com/better-reports/HelpScoutSharp
-  - Support: Mailbox API 2.0
+  - Support: Mailbox API 2.0 (focused on reporting)
 
 #### Integration Tools
 - **help-scout-docs** by Guestfolio
