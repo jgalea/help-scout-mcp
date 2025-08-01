@@ -1226,43 +1226,190 @@ Help Scout provides comprehensive reporting capabilities across multiple categor
 
 **Volume by Channel Report**
 - **Endpoint**: `GET /v2/reports/conversations/volume-by-channel`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data with channel breakdown (chat, email, phone counts)
+- **Example**: `[{"date": "2018-10-01T12:00:00Z", "chat": 12, "email": 35, "phone": 6}]`
 
 **Busiest Time of Day Report**
-- **Endpoint**: `GET /v2/reports/conversations/busiest-time`
+- **Endpoint**: `GET /v2/reports/conversations/busy-times`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **Response**: Array of objects with day (1-7), hour (0-23), and conversation count
+- **Time Zone**: Uses company's configured time zone
+- **Example**: `[{"day": 1, "hour": 9, "count": 25}, {"day": 7, "hour": 22, "count": 12}]`
 
 **New Conversations Report**
 - **Endpoint**: `GET /v2/reports/conversations/new`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing new conversation counts
+- **Features**: Period comparison between current and previous intervals
+
+**New Conversations Drilldown**
+- **Endpoint**: `GET /v2/reports/conversations/new-drilldown`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `mailboxes`, `tags`, `types`, `folders`, `page`, `rows` (max 50)
+- **Response**: Detailed conversation list with pagination
+- **Use Case**: Detailed breakdown of new conversations instead of just statistics
 
 **Received Messages Report**
 - **Endpoint**: `GET /v2/reports/conversations/received-messages`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing customer message volumes (excludes agent replies)
+- **Note**: Only counts messages from customers, not agent responses
 
 **Conversations Drilldown**
 - **Endpoint**: `GET /v2/reports/conversations/drilldown`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `mailboxes`, `tags`, `types`, `folders`, `page`, `rows` (max 50)
+- **Response**: Detailed conversation list with full metadata and pagination
+- **Use Case**: Comprehensive conversation analysis with filtering
+
+**Conversations Field Drilldown**
+- **Endpoint**: `GET /v2/reports/conversations/fields-drilldown`
+- **Required Parameters**: `start`, `end`, `field` (tagid/replyid/workflowid/customerid), `fieldid`
+- **Optional Parameters**: `mailboxes`, `tags`, `types`, `folders`, `page`, `rows` (max 50)
+- **Response**: Conversation data filtered by specific field values
+- **Use Case**: Analysis of conversations by specific tags, saved replies, workflows, or customers
 
 ##### User Reports
 
 **User Overall Report**
 - **Endpoint**: `GET /v2/reports/user`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **Metrics**: Conversations created/resolved, replies sent, response/resolution times, happiness score, handle time, busiest day
+- **Features**: Current vs previous period comparison with percentage changes
 
 **User Conversation History**
 - **Endpoint**: `GET /v2/reports/user/conversation-history`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `status`, `mailboxes`, `tags`, `types`, `folders`
+- **Sorting**: `sortField` (number, repliesSent, responseTime, resolveTime), `sortOrder` (ASC/DESC)
+- **Response**: Detailed conversation list with performance metrics, pagination support
+- **Use Case**: Drill-down analysis of specific user's conversation activity
 
 **User Customers Helped**
 - **Endpoint**: `GET /v2/reports/user/customers-helped`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing customers helped per period
+- **Example**: `[{"date": "2016-08-01T12:00:00Z", "customers": 29}]`
 
 **User Happiness Report**
 - **Endpoint**: `GET /v2/reports/user/happiness`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **Metrics**: Rating percentages (Great/Okay/Not Good), customer counts, happiness score
+- **Calculation**: Happiness Score = Great% - Not Good%
+- **Features**: Period comparison with delta calculations
+
+**User Happiness Drilldown**
+- **Endpoint**: `GET /v2/reports/user/ratings`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `mailboxes`, `tags`, `types`, `folders`, `rating` (great/ok/not-good/all)
+- **Sorting**: `sortField` (number, modifiedAt, rating), `sortOrder` (ASC/DESC)
+- **Response**: Individual rating entries with conversation details, customer/user metadata
+- **Use Case**: Detailed analysis of specific satisfaction ratings
 
 **User Replies Report**
 - **Endpoint**: `GET /v2/reports/user/replies`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` with time range restrictions (day/week/month)
+- **Response**: Time-series data showing replies sent per period
+- **Example**: `[{"date": "2016-07-01T12:00:00Z", "replies": 15}]`
 
 **User Resolutions Report**
 - **Endpoint**: `GET /v2/reports/user/resolutions`
+- **Required Parameters**: `user` (User ID), `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing conversations resolved per period
+- **Example**: `[{"date": "2017-01-01T12:00:00Z", "resolved": 18}]`
+
+##### Productivity Reports
+
+**Productivity Overall Report**
+- **Endpoint**: `GET /v2/reports/productivity`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **Metrics**: Total conversations, resolution time, replies to resolve, response time, first response time, resolved conversations, closed conversations, replies sent, handle time
+- **Features**: Period comparison, percentage changes, detailed time range distributions
+
+**First Response Time Report**
+- **Endpoint**: `GET /v2/reports/productivity/first-response-time`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing first response time durations
+- **Example**: `[{"date": "2016-07-01T12:00:00Z", "time": "02:15:30"}]`
+
+**Replies Sent Report**
+- **Endpoint**: `GET /v2/reports/productivity/replies-sent`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing reply volumes
+- **Example**: `[{"date": "2014-01-01T12:00:00Z", "replies": 636}]`
+
+**Resolution Time Report**
+- **Endpoint**: `GET /v2/reports/productivity/resolution-time`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing average resolution times
+- **Use Case**: Track resolution performance trends over time
+
+**Resolved Conversations Report**
+- **Endpoint**: `GET /v2/reports/productivity/resolved`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing resolved conversation counts
+- **Example**: `[{"date": "2014-01-01T12:00:00Z", "resolved": 14}]`
+
+**Response Time Report**
+- **Endpoint**: `GET /v2/reports/productivity/response-time`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `officeHours`
+- **View Options**: `viewBy` (day ≤60 days, week ≤1 year, month ≥61 days)
+- **Response**: Time-series data showing response time durations
+- **Note**: Requires office hours to be enabled when using `officeHours` parameter
+
+##### Happiness Reports
+
+**Happiness Overall Report**
+- **Endpoint**: `GET /v2/reports/happiness`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **Metrics**: Rating percentages (Great/Okay/Not Good), happiness score, customer counts
+- **Calculation**: Happiness Score = Great% - Not Good%
+- **Features**: Period comparison with delta calculations
+
+**Happiness Ratings Drilldown**
+- **Endpoint**: `GET /v2/reports/happiness/ratings`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`, `rating` (great/ok/not-good/all)
+- **Sorting**: `sortField` (number, modifiedAt, rating), `sortOrder` (ASC/DESC)
+- **Pagination**: `page` parameter supported
+- **Response**: Individual rating entries with conversation details, customer/user metadata
+- **Use Case**: Detailed analysis of specific satisfaction ratings
 
 ##### Company Reports
 
 **Company Overall Report**
 - **Endpoint**: `GET /v2/reports/company`
+- **Required Parameters**: `start`, `end`
+- **Optional Parameters**: `previousStart`, `previousEnd`, `mailboxes`, `tags`, `types`, `folders`
+- **Metrics**: Customers helped, conversations closed, total replies, total active users, replies per day, resolved conversations per day
+- **Features**: User-specific performance breakdown, happiness score calculation, percentage changes
 
 **Company Customers Helped**
 - **Endpoint**: `GET /v2/reports/company/customers-helped`
