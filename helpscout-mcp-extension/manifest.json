@@ -3,7 +3,7 @@
   "name": "help-scout-mcp",
   "display_name": "Help Scout MCP Server",
   "version": "1.7.0",
-  "description": "Connect Claude to your Help Scout data for intelligent customer support analysis",
+  "description": "Help Scout MCP server — search and summarize support tickets, manage conversations with full transcripts, browse and edit Docs articles, and generate email, chat, and happiness reports",
   "long_description": "Help Scout integration for AI assistants.\n\n**Core Features:**\n- Advanced conversation search with query syntax\n- Multi-status search across active/pending/closed conversations\n- Inline transcripts for single-call ticket summarization\n- Structured filtering by ticket number, assignee, customer, or folder\n- Complete thread message retrieval with transcript format\n- Conversation summaries with customer and staff messages\n- Inbox discovery and server time utilities\n\n**Optional Features** (require additional configuration):\n- Full Docs API integration (articles, collections, categories)\n- Complete Reports API (email, chat, phone, happiness, company)\n\n**Security:**\n- OAuth2 Client Credentials authentication\n- Optional message content redaction via `REDACT_MESSAGE_CONTENT`\n- Comprehensive audit logging\n- Rate limiting with automatic retry",
   "author": {
     "name": "GravityKit",
@@ -16,7 +16,7 @@
   "homepage": "https://github.com/GravityKit/help-scout-mcp",
   "documentation": "https://github.com/GravityKit/help-scout-mcp#readme",
   "support": "https://github.com/GravityKit/help-scout-mcp/issues",
-  "icon": "icon.svg",
+  "icon": "icon.png",
   "screenshots": [],
   "compatibility": {
     "platforms": ["darwin", "win32", "linux"],

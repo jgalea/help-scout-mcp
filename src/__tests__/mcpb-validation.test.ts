@@ -3,10 +3,10 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { describe, it, expect, beforeAll } from '@jest/globals';
 
-describe('DXT Extension Validation', () => {
-  const dxtDir = path.join(process.cwd(), 'helpscout-mcp-extension');
-  const manifestPath = path.join(dxtDir, 'manifest.json');
-  const buildDir = path.join(dxtDir, 'build');
+describe('MCPB Extension Validation', () => {
+  const mcpbDir = path.join(process.cwd(), 'helpscout-mcp-extension');
+  const manifestPath = path.join(mcpbDir, 'manifest.json');
+  const buildDir = path.join(mcpbDir, 'build');
   let manifest: any;
 
   beforeAll(() => {
@@ -223,7 +223,7 @@ describe('DXT Extension Validation', () => {
 
   describe('Cross-Platform Compatibility', () => {
     it('should use path.join for all paths', () => {
-      const buildScript = path.join(process.cwd(), 'scripts/build-dxt.js');
+      const buildScript = path.join(process.cwd(), 'scripts/build-mcpb.js');
       const content = fs.readFileSync(buildScript, 'utf8');
 
       expect(content).toContain('path.join');
@@ -232,7 +232,7 @@ describe('DXT Extension Validation', () => {
     });
 
     it('should have cross-platform copyDirectory function', () => {
-      const buildScript = path.join(process.cwd(), 'scripts/build-dxt.js');
+      const buildScript = path.join(process.cwd(), 'scripts/build-mcpb.js');
       const content = fs.readFileSync(buildScript, 'utf8');
 
       expect(content).toContain('copyDirectory');

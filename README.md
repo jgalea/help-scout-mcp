@@ -31,7 +31,7 @@
   - Company-wide reports with customer and team insights
   - Happiness reports with satisfaction scores and feedback
   - Docs analytics with article views and visitor metrics
-- **🎯 DXT Extension**: One-click installation for Claude Desktop
+- **🎯 MCPB Extension**: One-click installation for Claude Desktop
 - **🔧 Clear Environment Variables**: `HELPSCOUT_APP_ID` and `HELPSCOUT_APP_SECRET`
 - **⚡ Connection Pooling**: Improved performance with HTTP connection reuse
 - **🛡️ Enhanced Security**: Comprehensive input validation and API constraints
@@ -43,17 +43,17 @@
 - **Node.js 18+** (for command line usage)
 - **Help Scout Account** with API access
 - **OAuth2 App** from Help Scout (Personal Access Tokens are no longer supported)
-- **Claude Desktop** (for DXT installation) or any MCP-compatible client
+- **Claude Desktop** (for MCPB installation) or any MCP-compatible client
 
-> **Note**: The DXT extension includes Node.js, so no local installation needed for Claude Desktop users.
+> **Note**: The MCPB extension bundles all dependencies, so no local Node.js installation needed for Claude Desktop users.
 
 ## Quick Start
 
-### 🎯 Option 1: Claude Desktop (DXT One-Click Install)
+### 🎯 Option 1: Claude Desktop (MCPB One-Click Install)
 
-**Easiest setup using [DXT (Desktop Extensions)](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
+**Easiest setup using [MCP Bundles](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
 
-1. Download the latest [`.dxt` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
+1. Download the latest [`.mcpb` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
 2. Double-click to install in Claude Desktop
 3. Enter your Help Scout App ID and App Secret when prompted
 4. Start using immediately!
@@ -575,7 +575,7 @@ export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
 - **🔌 Custom Integrations**: Any application implementing the MCP standard
 - **🛠️ Development Tools**: Command-line MCP clients and custom automation scripts
 
-**Primary Platform**: [Claude Desktop](https://claude.ai/desktop) with full DXT and manual configuration support
+**Primary Platform**: [Claude Desktop](https://claude.ai/desktop) with full MCPB and manual configuration support
 
 *Since this server follows the MCP standard, it automatically works with any current or future MCP-compatible client.*
 
