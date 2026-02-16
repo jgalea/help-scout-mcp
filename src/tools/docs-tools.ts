@@ -1499,7 +1499,7 @@ export class DocsToolHandler extends Injectable {
           text: JSON.stringify({
             article: {
               ...article,
-              text: config.security.allowPii ? article.text : '[REDACTED - Set ALLOW_PII=true to view article content]',
+              text: config.security.allowPii ? article.text : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
             },
           }),
         }],
@@ -1520,7 +1520,7 @@ export class DocsToolHandler extends Injectable {
             categories: (article as any).categories,
             related: (article as any).related,
             viewCount: (article as any).viewCount,
-            text: config.security.allowPii ? article.text : '[REDACTED - Set ALLOW_PII=true to view article content]',
+            text: config.security.allowPii ? article.text : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
             createdAt: (article as any).createdAt,
             updatedAt: (article as any).updatedAt,
           },

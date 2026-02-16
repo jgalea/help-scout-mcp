@@ -183,8 +183,8 @@ describe('HelpScoutClient', () => {
         message: 'Help Scout authentication failed. Please check your API credentials.',
       });
       // Error details should include suggestion about OAuth2 credentials
-      expect(transformedError.details.suggestion).toContain('HELPSCOUT_CLIENT_ID');
-      expect(transformedError.details.suggestion).toContain('HELPSCOUT_CLIENT_SECRET');
+      expect(transformedError.details.suggestion).toContain('HELPSCOUT_APP_ID');
+      expect(transformedError.details.suggestion).toContain('HELPSCOUT_APP_SECRET');
       // Error details should NOT contain url/method (removed in new code)
       expect(transformedError.details.url).toBeUndefined();
       expect(transformedError.details.method).toBeUndefined();

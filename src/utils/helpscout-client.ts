@@ -265,7 +265,7 @@ export class HelpScoutClient {
       if (!clientId || !clientSecret) {
         throw new Error(
           'OAuth2 authentication required. Help Scout API only supports OAuth2 Client Credentials flow.\n' +
-          'Set HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET environment variables.'
+          'Set HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET environment variables.'
         );
       }
 
@@ -305,7 +305,7 @@ export class HelpScoutClient {
         message: 'Help Scout authentication failed. Please check your API credentials.',
         details: {
           requestId,
-          suggestion: 'Verify HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET are valid',
+          suggestion: 'Verify HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET are valid',
         },
       };
     }
