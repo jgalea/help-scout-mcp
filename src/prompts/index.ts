@@ -119,123 +119,54 @@ export class PromptHandler {
   private async helpScoutBestPractices(): Promise<GetPromptResult> {
     const prompt = `# Help Scout MCP Best Practices Guide
 
-## 🚨 CRITICAL WORKFLOW - Always Follow This Pattern
+## Inbox IDs Are Auto-Discovered
 
-### The Golden Rule: Inbox Name → Inbox ID → Search
+Available inboxes and their IDs are listed in the server instructions (sent at connection time).
+Use those IDs directly — no need to call listAllInboxes first unless the instructions show no inboxes.
 
-When a user mentions ANY inbox by name (e.g., "support inbox", "sales mailbox", "customer service"), you MUST:
+## Tool Selection Guide
 
-1. **FIRST**: Call \`searchInboxes\` to find the inbox ID
-   - Even if the name seems obvious, always look it up
-   - Use empty string "" to list all inboxes if unsure
-   - Example: \`searchInboxes(query: "support")\` or \`searchInboxes(query: "")\`
+| Task | Tool |
+|------|------|
+| Find tickets by keyword (billing, refund, bug) | searchConversations with searchTerms |
+| List recent/filtered tickets | searchConversations with status/date/inbox |
+| Complex filters (email domain, multiple tags) | searchConversations with contentTerms/customerEmail/tags |
+| Summarize recent tickets with transcripts | searchConversations with includeTranscripts:true |
+| Lookup by ticket number (#12345) | structuredConversationFilter |
+| Get full conversation thread | getThreads |
+| Quick conversation preview | getConversationSummary |
+| Browse/search Docs articles | listDocsArticles, searchDocsArticles |
+| Get report data | getConversationReport, getHappinessReport |
 
-2. **THEN**: Use the inbox ID in your conversation search
-   - Never skip the inbox lookup step
-   - Always use the exact ID returned from searchInboxes
+## Workflow Patterns
 
-### Example Correct Workflow
+- **Summarize latest tickets**: searchConversations with includeTranscripts:true (single call, returns conversations + message transcripts)
+- **Ticket investigation**: searchConversations -> getConversationSummary -> getThreads
+- **Keyword research**: searchConversations with searchTerms -> getThreads for details
+- **Customer history**: searchConversations with customerEmail -> getThreads
 
-**User**: "Show me urgent conversations in the support inbox"
-
-**CORRECT Approach**:
-\`\`\`
-1. searchInboxes(query: "support")
-   → Returns: [{id: "12345", name: "Support Inbox"}, ...]
-   
-2. comprehensiveConversationSearch({
-     searchTerms: ["urgent"],
-     inboxId: "12345"
-   })
-\`\`\`
-
-**INCORRECT Approach** (DO NOT DO THIS):
-\`\`\`
-❌ comprehensiveConversationSearch({
-     searchTerms: ["urgent"]
-   })
-   // Missing inbox filter - will search ALL inboxes!
-\`\`\`
-
-## 📋 Common Scenarios and Solutions
+## Common Scenarios
 
 ### Scenario 1: User Mentions Multiple Inboxes
-**User**: "Check support and sales inboxes for refund requests"
-
-**Workflow**:
-1. Call searchInboxes(query: "") to list ALL inboxes
-2. Identify the support and sales inbox IDs
-3. Run separate searches for each inbox:
-   - comprehensiveConversationSearch with support inbox ID
-   - comprehensiveConversationSearch with sales inbox ID
-4. Combine and present results clearly
+Use the inbox IDs from the server instructions. Run separate searches for each inbox
+with searchConversations (using searchTerms), then combine and present results.
 
 ### Scenario 2: No Results Found
-If a search returns no results:
-1. Verify the inbox ID is correct (re-run searchInboxes if needed)
-2. Try broader search terms
-3. Extend the timeframe (default is 60 days)
-4. Check different statuses (active, pending, closed)
-5. Consider that the inbox might be empty or have different naming
+1. Try broader search terms
+2. Extend the timeframe (default is 60 days)
+3. Check different statuses (active, pending, closed)
+4. Verify inbox ID is correct using listAllInboxes
 
 ### Scenario 3: General Search Without Inbox Mention
-**User**: "Find all conversations about billing issues"
+Use searchConversations with searchTerms (no inboxId) to search across ALL accessible inboxes.
 
-**Workflow**:
-1. Use comprehensiveConversationSearch WITHOUT inboxId
-2. This searches across ALL accessible inboxes
-3. Results will show which inbox each conversation belongs to
+## Notes
 
-## 🛠️ Tool Selection Guide
-
-### Use \`comprehensiveConversationSearch\` when:
-- You need results across multiple statuses (recommended default)
-- User wants a broad search
-- You're not sure which status to use
-- Initial searches return no results
-
-### Use \`searchConversations\` when:
-- You need very specific status filtering
-- You're using advanced HelpScout query syntax
-- You need custom sorting or field selection
-
-### Use \`advancedConversationSearch\` when:
-- You need complex boolean logic
-- Searching by email domain
-- Combining multiple search criteria
-
-## ⚠️ Common Pitfalls to Avoid
-
-1. **Never skip the inbox lookup** - Always use searchInboxes first when inbox names are mentioned
-2. **Don't assume inbox IDs** - They're not guessable; you must look them up
-3. **Remember status matters** - Help Scout often returns empty results without status filters
-4. **Use the right tool** - comprehensiveConversationSearch is usually best for general searches
-5. **Check your timeframes** - Default is 60 days; user might need longer
-
-## 📊 Multi-Inbox Reporting Pattern
-
-When analyzing across multiple inboxes:
-\`\`\`
-1. searchInboxes(query: "") → Get all inboxes
-2. For each inbox:
-   - Note the ID and name
-   - Run comprehensiveConversationSearch with that inboxId
-   - Collect results
-3. Present organized summary:
-   - Group by inbox
-   - Show totals and breakdowns
-   - Highlight important patterns
-\`\`\`
-
-## 🔍 Search Tips
-
-- **Empty searches are valid**: searchInboxes(query: "") lists ALL inboxes
-- **Case doesn't matter**: Searches are case-insensitive
-- **Partial matches work**: "sup" will match "Support"
-- **Be specific with timeframes**: Use createdAfter/createdBefore for precision
-- **Combine search terms**: Use arrays in comprehensiveConversationSearch
-
-Remember: When in doubt, start with searchInboxes(query: "") to see all available inboxes!`;
+- Always use inbox IDs from the server instructions (not names)
+- All search tools default to active+pending+closed statuses
+- Use getServerTime for date-relative queries
+- searchConversations with searchTerms is usually best for general keyword searches
+- Be specific with timeframes: use createdAfter/createdBefore for precision`;
 
     return {
       description: 'Essential workflow guide for using Help Scout MCP effectively',
@@ -410,9 +341,7 @@ Note: The exact tag names may vary by organization. Common urgent tag variations
    - Conversation statuses breakdown (active, pending, closed)
    - Most recent conversations
 
-5. ${includeThreads ? `Since includeThreads is enabled, for each conversation found:
-   - Use "getConversationSummary" to get key details
-   - Optionally use "getThreads" for full message history of important conversations` : `For a quick overview, use "getConversationSummary" on the most recent or important conversations.`}
+5. ${includeThreads ? `Since includeThreads is enabled, use includeTranscripts:true in your searchConversations call to get conversations with inline transcripts in a single request. For deeper investigation of specific tickets, use "getThreads" with format:"transcript".` : `For a quick overview, use "getConversationSummary" on the most recent or important conversations.`}
 
 This will provide a comprehensive view of inbox activity over the specified time period.`;
 
