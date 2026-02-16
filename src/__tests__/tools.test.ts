@@ -1,6 +1,63 @@
 import nock from 'nock';
-import { ToolHandler } from '../tools/index.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+
+// Mock config with dynamic getters so env vars set in beforeEach take effect
+jest.mock('../utils/config.js', () => ({
+  config: {
+    helpscout: {
+      get apiKey() { return process.env.HELPSCOUT_API_KEY || ''; },
+      get clientId() { return process.env.HELPSCOUT_APP_ID || process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
+      get clientSecret() { return process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || ''; },
+      get baseUrl() { return process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/'; },
+      get defaultInboxId() { return process.env.HELPSCOUT_DEFAULT_INBOX_ID; },
+      get docsApiKey() { return process.env.HELPSCOUT_DOCS_API_KEY || ''; },
+      get docsBaseUrl() { return process.env.HELPSCOUT_DOCS_BASE_URL || 'https://docsapi.helpscout.net/v1/'; },
+      get allowDocsDelete() { return process.env.HELPSCOUT_ALLOW_DOCS_DELETE === 'true'; },
+      get defaultDocsCollectionId() { return process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || ''; },
+      get defaultDocsSiteId() { return process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || ''; },
+      get disableDocs() { return process.env.HELPSCOUT_DISABLE_DOCS === 'true'; },
+    },
+    cache: { ttlSeconds: 300, maxSize: 10000 },
+    logging: { level: 'info' },
+    security: { allowPii: false },
+    responses: { get verbose() { return process.env.HELPSCOUT_VERBOSE_RESPONSES === 'true'; } },
+    connectionPool: {
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout: 30000,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+    },
+  },
+  validateConfig: jest.fn(),
+  isVerbose: (args: unknown) => {
+    if (args && typeof args === 'object' && 'verbose' in args && typeof (args as any).verbose === 'boolean') {
+      return (args as any).verbose;
+    }
+    return process.env.HELPSCOUT_VERBOSE_RESPONSES === 'true';
+  },
+}));
+
+// Mock logger to reduce test output noise
+jest.mock('../utils/logger.js', () => ({
+  logger: {
+    info: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    warn: jest.fn(),
+  },
+}));
+
+// Mock cache
+jest.mock('../utils/cache.js', () => ({
+  cache: {
+    get: jest.fn(() => null),
+    set: jest.fn(),
+    clear: jest.fn(),
+  },
+}));
+
+import { ToolHandler } from '../tools/index.js';
 
 describe('ToolHandler', () => {
   let toolHandler: ToolHandler;
@@ -11,19 +68,19 @@ describe('ToolHandler', () => {
     process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
     process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
     process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
-    
+
     nock.cleanAll();
-    
+
     // Mock OAuth2 authentication endpoint
-    nock(baseURL)
+    nock('https://api.helpscout.net')
       .persist()
-      .post('/oauth2/token')
+      .post('/v2/oauth2/token')
       .reply(200, {
         access_token: 'mock-access-token',
         token_type: 'Bearer',
         expires_in: 3600,
       });
-    
+
     toolHandler = new ToolHandler();
   });
 
@@ -36,23 +93,29 @@ describe('ToolHandler', () => {
   describe('listTools', () => {
     it('should return all available tools', async () => {
       const tools = await toolHandler.listTools();
-      
-      expect(tools).toHaveLength(8);
-      expect(tools.map(t => t.name)).toEqual([
+
+      // Core conversation tools + structuredConversationFilter + docs tools + reports tools
+      expect(tools.length).toBeGreaterThanOrEqual(9);
+      const toolNames = tools.map(t => t.name);
+
+      // Verify all core conversation tools are present
+      const expectedCoreTools = [
         'searchInboxes',
-        'searchConversations', 
+        'searchConversations',
         'getConversationSummary',
         'getThreads',
         'getServerTime',
         'listAllInboxes',
-        'advancedConversationSearch',
-        'comprehensiveConversationSearch'
-      ]);
+        'structuredConversationFilter'
+      ];
+      expectedCoreTools.forEach(name => {
+        expect(toolNames).toContain(name);
+      });
     });
 
     it('should have proper tool schemas', async () => {
       const tools = await toolHandler.listTools();
-      
+
       tools.forEach(tool => {
         expect(tool).toHaveProperty('name');
         expect(tool).toHaveProperty('description');
@@ -77,7 +140,7 @@ describe('ToolHandler', () => {
 
       expect(result.content).toHaveLength(1);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       expect(response).toHaveProperty('isoTime');
@@ -114,21 +177,19 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content).toHaveLength(1);
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
-      
+
       // Handle error responses
       if (result.isError) {
         expect(textContent.text).toContain('Error');
         return;
       }
-      
+
       const response = JSON.parse(textContent.text);
       expect(response.inboxes).toHaveLength(2);
       expect(response.inboxes[0]).toHaveProperty('id', 1);
       expect(response.inboxes[0]).toHaveProperty('name', 'Support Inbox');
-      expect(response.usage).toContain('Use the "id" field');
-      expect(response.nextSteps).toBeDefined();
       expect(response.totalInboxes).toBe(2);
     });
   });
@@ -160,15 +221,15 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content).toHaveLength(1);
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
-      
+
       // Handle error responses
       if (result.isError) {
         expect(textContent.text).toContain('Error');
         return;
       }
-      
+
       const response = JSON.parse(textContent.text);
       expect(response.results).toHaveLength(1);
       expect(response.results[0].name).toBe('Support Inbox');
@@ -192,11 +253,11 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       // The error might be handled gracefully, so check for either error or empty results
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       // Should either be an error or empty results
-      expect(response.results || response.totalFound === 0 || textContent.text.includes('Error')).toBeTruthy();
+      expect(response.error || response.results || response.totalFound === 0).toBeTruthy();
     });
 
     it('should handle unknown tool names', async () => {
@@ -211,7 +272,7 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       expect(result.isError).toBe(true);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       expect(textContent.text).toContain('Unknown tool');
     });
@@ -260,7 +321,7 @@ describe('ToolHandler', () => {
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
@@ -270,11 +331,218 @@ describe('ToolHandler', () => {
     });
   });
 
+  describe('searchConversations with includeTranscripts', () => {
+    it('should return conversations with inline transcripts', async () => {
+      const mockConversations = {
+        _embedded: {
+          conversations: [
+            {
+              id: 101,
+              subject: 'Billing Issue',
+              status: 'active',
+              createdAt: '2023-06-01T00:00:00Z',
+              customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+            },
+          ],
+        },
+        page: { size: 10, totalElements: 1 },
+        _links: { next: null },
+      };
+
+      const mockThreads = {
+        _embedded: {
+          threads: [
+            {
+              id: 201,
+              type: 'customer',
+              state: 'published',
+              body: '<p>I have a billing question</p>',
+              createdAt: '2023-06-01T00:00:00Z',
+              customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+              createdBy: null,
+            },
+            {
+              id: 202,
+              type: 'message',
+              state: 'published',
+              body: '<p>Happy to help with billing</p>',
+              createdAt: '2023-06-01T01:00:00Z',
+              customer: null,
+              createdBy: { id: 5, firstName: 'Agent', lastName: 'Smith' },
+            },
+            {
+              id: 203,
+              type: 'note',
+              state: 'published',
+              body: 'Internal note',
+              createdAt: '2023-06-01T00:30:00Z',
+              customer: null,
+              createdBy: { id: 5, firstName: 'Agent', lastName: 'Smith' },
+            },
+          ],
+        },
+        page: { size: 10, totalElements: 3 },
+        _links: { next: null },
+      };
+
+      // Mock: search returns conversations for all 3 statuses
+      for (const status of ['active', 'pending', 'closed']) {
+        nock(baseURL)
+          .get('/conversations')
+          .query((q) => q.status === status)
+          .reply(200, status === 'active' ? mockConversations : {
+            _embedded: { conversations: [] },
+            page: { size: 10, totalElements: 0 },
+            _links: { next: null },
+          });
+      }
+
+      // Mock: thread fetch for conversation 101
+      nock(baseURL)
+        .get('/conversations/101/threads')
+        .query(true)
+        .reply(200, mockThreads);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'searchConversations',
+          arguments: {
+            includeTranscripts: true,
+            limit: 5,
+          },
+        },
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.includeTranscripts).toBe(true);
+      expect(response.transcriptMaxMessages).toBe(10);
+
+      // Find the conversation in the results
+      const allConvs = response.results || response.resultsByStatus?.flatMap((s: any) => s.conversations) || [];
+      expect(allConvs.length).toBeGreaterThanOrEqual(1);
+
+      const conv = allConvs.find((c: any) => c.id === 101);
+      expect(conv).toBeDefined();
+      expect(conv.transcript).toBeDefined();
+      expect(conv.transcript).toHaveLength(2); // customer + staff only (note excluded)
+      expect(conv.transcript[0].role).toBe('customer');
+      expect(conv.transcript[1].role).toBe('staff');
+      // allowPii is false in test config, so content is redacted
+      expect(conv.transcript[0].body).toContain('Content hidden');
+      expect(conv.transcript[1].body).toContain('Content hidden');
+    });
+
+    it('should default limit to 10 when includeTranscripts is true and no limit specified', async () => {
+      // We verify the default by checking the query param sent to the API
+      for (const status of ['active', 'pending', 'closed']) {
+        nock(baseURL)
+          .get('/conversations')
+          .query((q) => q.status === status)
+          .reply(200, {
+            _embedded: { conversations: [] },
+            page: { size: 10, totalElements: 0 },
+            _links: { next: null },
+          });
+      }
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'searchConversations',
+          arguments: {
+            includeTranscripts: true,
+            // no limit specified — should default to 10 instead of 50
+          },
+        },
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.includeTranscripts).toBe(true);
+    });
+
+    it('should respect transcriptMaxMessages parameter', async () => {
+      const mockConversations = {
+        _embedded: {
+          conversations: [
+            {
+              id: 301,
+              subject: 'Long thread',
+              status: 'active',
+              createdAt: '2023-06-01T00:00:00Z',
+              customer: { id: 1, firstName: 'Test', lastName: 'User' },
+            },
+          ],
+        },
+        page: { size: 10, totalElements: 1 },
+        _links: { next: null },
+      };
+
+      // Create 5 customer messages
+      const threads = Array.from({ length: 5 }, (_, i) => ({
+        id: 400 + i,
+        type: 'customer',
+        state: 'published',
+        body: `<p>Message ${i + 1}</p>`,
+        createdAt: `2023-06-0${i + 1}T00:00:00Z`,
+        customer: { id: 1, firstName: 'Test', lastName: 'User' },
+        createdBy: null,
+      }));
+
+      for (const status of ['active', 'pending', 'closed']) {
+        nock(baseURL)
+          .get('/conversations')
+          .query((q) => q.status === status)
+          .reply(200, status === 'active' ? mockConversations : {
+            _embedded: { conversations: [] },
+            page: { size: 10, totalElements: 0 },
+            _links: { next: null },
+          });
+      }
+
+      nock(baseURL)
+        .get('/conversations/301/threads')
+        .query(true)
+        .reply(200, {
+          _embedded: { threads },
+          page: { size: 10, totalElements: 5 },
+          _links: { next: null },
+        });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'searchConversations',
+          arguments: {
+            includeTranscripts: true,
+            transcriptMaxMessages: 2,
+            limit: 5,
+          },
+        },
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      const allConvs = response.results || response.resultsByStatus?.flatMap((s: any) => s.conversations) || [];
+      const conv = allConvs.find((c: any) => c.id === 301);
+      expect(conv).toBeDefined();
+      expect(conv.transcript).toHaveLength(2); // capped at transcriptMaxMessages
+      expect(response.transcriptMaxMessages).toBe(2);
+    });
+  });
+
   describe('API Constraints Validation - Branch Coverage', () => {
     it('should handle validation failures with required prerequisites', async () => {
       // Set user context that mentions an inbox
       toolHandler.setUserContext('search the support inbox for urgent tickets');
-      
+
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
@@ -288,7 +556,7 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       expect(response.error).toBe('API Constraint Validation Failed');
@@ -308,7 +576,7 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       expect(response.error).toBe('API Constraint Validation Failed');
@@ -338,7 +606,7 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
+
       expect(response.apiGuidance).toBeDefined();
       expect(response.apiGuidance[0]).toContain('NEXT STEP');
     });
@@ -354,7 +622,7 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       expect(response.isoTime).toBeDefined();
@@ -375,7 +643,7 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       expect(result.isError).toBe(true);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const errorResponse = JSON.parse(textContent.text);
       expect(errorResponse.error.code).toBe('INVALID_INPUT');
@@ -392,12 +660,15 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const errorResponse = JSON.parse(textContent.text);
-      
+
       // Could be either validation error or API constraint validation error
-      expect(['INVALID_INPUT', 'API Constraint Validation Failed']).toContain(errorResponse.error || errorResponse.error?.code);
+      const errorIdentifier = typeof errorResponse.error === 'string'
+        ? errorResponse.error
+        : errorResponse.error?.code;
+      expect(['INVALID_INPUT', 'API Constraint Validation Failed']).toContain(errorIdentifier);
     });
 
     it('should handle unknown tool calls', async () => {
@@ -412,20 +683,20 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       expect(result.isError).toBe(true);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const errorResponse = JSON.parse(textContent.text);
       expect(errorResponse.error.code).toBe('TOOL_ERROR');
       expect(errorResponse.error.message).toContain('Unknown tool');
     });
 
-    it('should handle comprehensive search with no inbox ID when required', async () => {
+    it('should handle keyword search with no inbox ID when required', async () => {
       toolHandler.setUserContext('search conversations in the support mailbox');
-      
+
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['urgent']
             // Missing inboxId despite mentioning "support mailbox"
@@ -435,12 +706,13 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
-      // Should trigger API constraint validation  
-      expect(response.error || response.details?.requiredPrerequisites).toBeDefined();
+
+      // Validation should fail because inbox was mentioned but no inboxId provided
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.requiredPrerequisites).toContain('searchInboxes');
     });
   });
 
@@ -477,7 +749,7 @@ describe('ToolHandler', () => {
 
       nock(baseURL)
         .get('/conversations/123/threads')
-        .query({ page: 1, size: 50 })
+        .query({ page: 1, size: 200 })
         .reply(200, mockThreads);
 
       const request: CallToolRequest = {
@@ -489,11 +761,11 @@ describe('ToolHandler', () => {
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
-        
+
         // Should handle null firstCustomerMessage
         expect(response.firstCustomerMessage).toBeNull();
         expect(response.latestStaffReply).toBeDefined();
@@ -532,7 +804,7 @@ describe('ToolHandler', () => {
 
       nock(baseURL)
         .get('/conversations/124/threads')
-        .query({ page: 1, size: 50 })
+        .query({ page: 1, size: 200 })
         .reply(200, mockThreads);
 
       const request: CallToolRequest = {
@@ -544,11 +816,11 @@ describe('ToolHandler', () => {
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
-        
+
         // Should handle null latestStaffReply
         expect(response.firstCustomerMessage).toBeDefined();
         expect(response.latestStaffReply).toBeNull();
@@ -592,7 +864,7 @@ describe('ToolHandler', () => {
         .get('/conversations/123')
         .reply(200, mockConversation)
         .get('/conversations/123/threads')
-        .query({ page: 1, size: 50 })
+        .query({ page: 1, size: 200 })
         .reply(200, mockThreads);
 
       const request: CallToolRequest = {
@@ -604,7 +876,7 @@ describe('ToolHandler', () => {
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const summary = JSON.parse(textContent.text);
@@ -632,35 +904,109 @@ describe('ToolHandler', () => {
 
       nock(baseURL)
         .get('/conversations/123/threads')
-        .query({ page: 1, size: 50 })
+        .query({ page: 1, size: 200 })
         .reply(200, mockResponse);
 
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
           name: 'getThreads',
-          arguments: { conversationId: "123", limit: 50 }
+          arguments: { conversationId: "123" }
         }
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
         expect(response.conversationId).toBe("123");
-        expect(response.threads).toHaveLength(2);
+        expect(response.threads).toHaveLength(1);
       }
+    });
+
+    it('should return transcript format with only customer/staff messages', async () => {
+      const mockResponse = {
+        _embedded: {
+          threads: [
+            {
+              id: 1,
+              type: 'customer',
+              body: '<p>Hello, I need help with <b>billing</b></p>',
+              customer: { id: 10, firstName: 'Jane', lastName: 'Doe', email: 'jane@test.com' },
+              createdBy: null,
+              createdAt: '2024-01-01T10:00:00Z',
+              updatedAt: '2024-01-01T10:00:00Z',
+            },
+            {
+              id: 2,
+              type: 'lineitem',
+              body: 'Assigned to Support Team',
+              customer: null,
+              createdBy: null,
+              createdAt: '2024-01-01T10:01:00Z',
+              updatedAt: '2024-01-01T10:01:00Z',
+            },
+            {
+              id: 3,
+              type: 'note',
+              body: 'Internal: check their account',
+              customer: null,
+              createdBy: { id: 20, firstName: 'Agent', lastName: 'Smith', email: 'agent@test.com' },
+              createdAt: '2024-01-01T10:02:00Z',
+              updatedAt: '2024-01-01T10:02:00Z',
+            },
+            {
+              id: 4,
+              type: 'message',
+              body: '<p>Hi Jane, I can help with that!</p>',
+              customer: null,
+              createdBy: { id: 20, firstName: 'Agent', lastName: 'Smith', email: 'agent@test.com' },
+              createdAt: '2024-01-01T10:05:00Z',
+              updatedAt: '2024-01-01T10:05:00Z',
+            },
+          ]
+        },
+        page: { size: 25, totalElements: 4, totalPages: 1, number: 0 }
+      };
+
+      nock(baseURL)
+        .get('/conversations/456/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, mockResponse);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '456', format: 'transcript' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.format).toBe('transcript');
+      expect(response.messages).toHaveLength(2); // Only customer + message, not lineitem/note
+      expect(response.messages[0].role).toBe('customer');
+      expect(response.messages[0].from).toBe('Jane Doe');
+      expect(response.messages[0].body).toContain('[Content hidden'); // PII redacted in test config
+      expect(response.messages[1].role).toBe('staff');
+      expect(response.messages[1].from).toBe('Agent Smith');
+      expect(response.messages[1].body).toContain('[Content hidden');
+      expect(response.totalMessages).toBe(2);
+      expect(response.totalThreads).toBe(4);
     });
   });
 
-  describe('comprehensiveConversationSearch', () => {
+  describe('searchConversations - keyword mode', () => {
     it('should search across multiple statuses by default', async () => {
       const freshToolHandler = new ToolHandler();
-      
+
       // Clean all previous mocks
       nock.cleanAll();
-      
+
       // Re-add the auth mock
       nock(baseURL)
         .persist()
@@ -736,25 +1082,26 @@ describe('ToolHandler', () => {
       };
 
       // Set up nock interceptors for each status
+      // Note: query includes createdAt filter appended by the tool
       nock(baseURL)
         .get('/conversations')
-        .query(params => params.status === 'active' && params.query === '(body:"urgent" OR subject:"urgent")')
+        .query(params => params.status === 'active' && (params.query as string).includes('body:"urgent"'))
         .reply(200, mockActiveConversations);
 
       nock(baseURL)
         .get('/conversations')
-        .query(params => params.status === 'pending' && params.query === '(body:"urgent" OR subject:"urgent")')
+        .query(params => params.status === 'pending' && (params.query as string).includes('body:"urgent"'))
         .reply(200, mockPendingConversations);
 
       nock(baseURL)
         .get('/conversations')
-        .query(params => params.status === 'closed' && params.query === '(body:"urgent" OR subject:"urgent")')
+        .query(params => params.status === 'closed' && (params.query as string).includes('body:"urgent"'))
         .reply(200, mockClosedConversations);
 
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['urgent'],
             timeframeDays: 30
@@ -763,13 +1110,13 @@ describe('ToolHandler', () => {
       };
 
       const result = await freshToolHandler.callTool(request);
-      
+
       expect(result.isError).toBeUndefined();
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
+
       expect(response.totalConversationsFound).toBe(4);
-      expect(response.totalAvailableAcrossStatuses).toBe(4);
+      expect(response.totalAvailable).toBe(4);
       expect(response.resultsByStatus).toHaveLength(3);
       expect(response.resultsByStatus[0].status).toBe('active');
       expect(response.resultsByStatus[0].conversations).toHaveLength(1);
@@ -779,11 +1126,11 @@ describe('ToolHandler', () => {
       expect(response.resultsByStatus[2].conversations).toHaveLength(2);
     });
 
-    it('should handle custom status selection', async () => {
+    it('should handle keyword search with custom limit', async () => {
       const freshToolHandler = new ToolHandler();
-      
+
       nock.cleanAll();
-      
+
       nock(baseURL)
         .persist()
         .post('/oauth2/token')
@@ -812,37 +1159,51 @@ describe('ToolHandler', () => {
         }
       };
 
+      const emptyResponse = {
+        _embedded: { conversations: [] },
+        page: { size: 10, totalElements: 0 }
+      };
+
       nock(baseURL)
         .get('/conversations')
-        .query(params => params.status === 'active' && params.query === '(body:"billing" OR subject:"billing")')
+        .query(params => params.status === 'active' && (params.query as string).includes('body:"billing"'))
         .reply(200, mockActiveConversations);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'pending' && (params.query as string).includes('body:"billing"'))
+        .reply(200, emptyResponse);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'closed' && (params.query as string).includes('body:"billing"'))
+        .reply(200, emptyResponse);
 
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['billing'],
-            statuses: ['active'],
-            limitPerStatus: 10
+            limit: 10
           }
         }
       };
 
       const result = await freshToolHandler.callTool(request);
-      
+
       expect(result.isError).toBeUndefined();
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
+
       expect(response.totalConversationsFound).toBe(1);
-      expect(response.resultsByStatus).toHaveLength(1);
+      expect(response.resultsByStatus).toHaveLength(3);
       expect(response.resultsByStatus[0].status).toBe('active');
     });
 
     it('should handle invalid inboxId format validation', async () => {
       toolHandler.setUserContext('search the support inbox');
-      
+
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
@@ -856,51 +1217,74 @@ describe('ToolHandler', () => {
 
       const result = await toolHandler.callTool(request);
       expect(result.content[0]).toHaveProperty('type', 'text');
-      
+
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
       expect(response.error).toBe('API Constraint Validation Failed');
       expect(response.details.errors[0]).toContain('Invalid inbox ID format');
     });
 
-    it('should handle different search locations in comprehensive search', async () => {
-      // Mock successful search
-      const mockConversations = {
+    it('should handle different search locations in keyword search', async () => {
+      const freshToolHandler = new ToolHandler();
+
+      nock.cleanAll();
+
+      nock(baseURL)
+        .persist()
+        .post('/oauth2/token')
+        .reply(200, {
+          access_token: 'mock-access-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+        });
+
+      const emptyResponse = {
         _embedded: { conversations: [] },
         page: { size: 25, totalElements: 0 }
       };
 
+      // Mock all 3 statuses
       nock(baseURL)
         .get('/conversations')
-        .query(() => true)
-        .reply(200, mockConversations);
+        .query(params => params.status === 'active')
+        .reply(200, emptyResponse);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'pending')
+        .reply(200, emptyResponse);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'closed')
+        .reply(200, emptyResponse);
 
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['test'],
             searchIn: ['subject'],  // Test subject-only search
-            statuses: ['active']
           }
         }
       };
 
-      const result = await toolHandler.callTool(request);
-      
+      const result = await freshToolHandler.callTool(request);
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
-        expect(response.searchIn).toEqual(['subject']);
+        expect(response.query).toContain('subject:"test"');
+        expect(response.query).not.toContain('body:"test"');
       }
     });
 
     it('should handle search with no results and provide guidance', async () => {
       const freshToolHandler = new ToolHandler();
-      
+
       nock.cleanAll();
-      
+
       nock(baseURL)
         .persist()
         .post('/oauth2/token')
@@ -941,7 +1325,7 @@ describe('ToolHandler', () => {
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['nonexistent']
           }
@@ -949,18 +1333,20 @@ describe('ToolHandler', () => {
       };
 
       const result = await freshToolHandler.callTool(request);
-      
+
       expect(result.isError).toBeUndefined();
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
+
       expect(response.totalConversationsFound).toBe(0);
-      expect(response.searchTips).toBeDefined();
-      expect(response.searchTips).toContain('Try broader search terms or increase the timeframe');
+      // New compact shape: no searchTips field, but totalAvailable is present
+      expect(response.totalAvailable).toBe(0);
+      expect(response.resultsByStatus).toBeDefined();
+      expect(response.resultsByStatus).toHaveLength(3);
     });
   });
 
-  describe('Advanced Conversation Search - Branch Coverage', () => {
+  describe('searchConversations - structured mode', () => {
     it('should handle advanced search with all parameter types', async () => {
       const mockResponse = {
         _embedded: { conversations: [] },
@@ -975,7 +1361,7 @@ describe('ToolHandler', () => {
       const request: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'advancedConversationSearch',
+          name: 'searchConversations',
           arguments: {
             contentTerms: ['urgent', 'billing'],
             subjectTerms: ['help', 'support'],
@@ -988,21 +1374,26 @@ describe('ToolHandler', () => {
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
-        expect(response.searchCriteria.contentTerms).toEqual(['urgent', 'billing']);
-        expect(response.searchCriteria.tags).toEqual(['vip', 'escalation']);
+        // New compact shape: query is a string containing the search terms
+        expect(response.query).toContain('body:"urgent"');
+        expect(response.query).toContain('body:"billing"');
+        expect(response.query).toContain('tag:"vip"');
+        expect(response.query).toContain('tag:"escalation"');
+        expect(response.pagination).toBeDefined();
+        expect(response.pagination.returned).toBe(0);
       }
     });
 
-    it('should handle field selection in search conversations', async () => {
+    it('should slim conversations by default in structured mode', async () => {
       const mockResponse = {
-        _embedded: { 
+        _embedded: {
           conversations: [
-            { id: 1, subject: 'Test', status: 'active', extraField: 'should be filtered' }
-          ] 
+            { id: 1, subject: 'Test', status: 'active', extraField: 'should be stripped', createdAt: '2024-01-01T00:00:00Z' }
+          ]
         },
         page: { size: 50, totalElements: 1 }
       };
@@ -1017,29 +1408,29 @@ describe('ToolHandler', () => {
         params: {
           name: 'searchConversations',
           arguments: {
-            query: 'test',
-            fields: ['id', 'subject'] // This should filter fields
+            contentTerms: ['test'],
           }
         }
       };
 
       const result = await toolHandler.callTool(request);
-      
+
       if (!result.isError) {
         const textContent = result.content[0] as { type: 'text'; text: string };
         const response = JSON.parse(textContent.text);
-        expect(response.results[0]).toEqual({ id: 1, subject: 'Test' });
+        // Slim mode strips extraField and other non-essential fields
+        expect(response.results[0].id).toBe(1);
         expect(response.results[0].extraField).toBeUndefined();
       }
     });
   });
 
   describe('enhanced searchConversations', () => {
-    it('should default to active status when query is provided without status', async () => {
+    it('should search all statuses by default when no status provided', async () => {
       const freshToolHandler = new ToolHandler();
-      
+
       nock.cleanAll();
-      
+
       nock(baseURL)
         .persist()
         .post('/oauth2/token')
@@ -1049,7 +1440,7 @@ describe('ToolHandler', () => {
           expires_in: 3600,
         });
 
-      const mockResponse = {
+      const emptyResponse = {
         _embedded: {
           conversations: []
         },
@@ -1061,10 +1452,21 @@ describe('ToolHandler', () => {
         }
       };
 
+      // Multi-status parallel search: active, pending, closed
       nock(baseURL)
         .get('/conversations')
         .query(params => params.status === 'active' && params.query === '(body:"test")')
-        .reply(200, mockResponse);
+        .reply(200, emptyResponse);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'pending' && params.query === '(body:"test")')
+        .reply(200, emptyResponse);
+
+      nock(baseURL)
+        .get('/conversations')
+        .query(params => params.status === 'closed' && params.query === '(body:"test")')
+        .reply(200, emptyResponse);
 
       const request: CallToolRequest = {
         method: 'tools/call',
@@ -1077,14 +1479,16 @@ describe('ToolHandler', () => {
       };
 
       const result = await freshToolHandler.callTool(request);
-      
+
       expect(result.isError).toBeUndefined();
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
-      
-      expect(response.searchInfo.status).toBe('active');
-      expect(response.searchInfo.appliedDefaults).toEqual(['status: active']);
-      expect(response.searchInfo.searchGuidance).toBeDefined();
+
+      // New compact shape: statuses array at top level, no searchInfo wrapper
+      expect(response.statuses).toEqual(['active', 'pending', 'closed']);
+      expect(response.pagination).toBeDefined();
+      expect(response.pagination.returned).toBe(0);
+      expect(response.pagination.totalAvailable).toBe(0);
     });
   });
 });

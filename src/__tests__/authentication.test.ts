@@ -20,45 +20,65 @@ describe('Authentication Configuration', () => {
   });
 
   describe('Environment Variable Priority', () => {
-    it('should prioritize HELPSCOUT_CLIENT_ID over HELPSCOUT_API_KEY for OAuth2', async () => {
-      process.env.HELPSCOUT_CLIENT_ID = 'new-client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'new-client-secret';
-      process.env.HELPSCOUT_API_KEY = 'legacy-client-id';
-      process.env.HELPSCOUT_APP_SECRET = 'legacy-app-secret';
+    it('should prioritize HELPSCOUT_APP_ID over HELPSCOUT_CLIENT_ID and HELPSCOUT_API_KEY', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id-priority';
+      process.env.HELPSCOUT_CLIENT_ID = 'client-id-fallback';
+      process.env.HELPSCOUT_API_KEY = 'api-key-fallback';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
 
       jest.resetModules();
       const { config } = await import('../utils/config.js');
-      
-      expect(config.helpscout.clientId).toBe('new-client-id');
-      expect(config.helpscout.clientSecret).toBe('new-client-secret');
+
+      expect(config.helpscout.clientId).toBe('app-id-priority');
     });
 
-    it('should prioritize HELPSCOUT_CLIENT_SECRET over HELPSCOUT_APP_SECRET', async () => {
+    it('should prioritize HELPSCOUT_APP_SECRET over HELPSCOUT_CLIENT_SECRET', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-priority';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret-fallback';
+
+      jest.resetModules();
+      const { config } = await import('../utils/config.js');
+
+      expect(config.helpscout.clientSecret).toBe('app-secret-priority');
+    });
+
+    it('should fall back to CLIENT_ID/CLIENT_SECRET when APP_ID/APP_SECRET not present', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'new-secret';
-      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret';
 
       jest.resetModules();
       const { config } = await import('../utils/config.js');
-      
-      expect(config.helpscout.clientSecret).toBe('new-secret');
+
+      expect(config.helpscout.clientId).toBe('client-id');
+      expect(config.helpscout.clientSecret).toBe('client-secret');
     });
 
-    it('should fall back to legacy naming when new naming is not present', async () => {
+    it('should not fall back to legacy API_KEY for clientId', async () => {
       process.env.HELPSCOUT_API_KEY = 'legacy-client-id';
       process.env.HELPSCOUT_APP_SECRET = 'legacy-app-secret';
 
       jest.resetModules();
       const { config } = await import('../utils/config.js');
-      
-      expect(config.helpscout.clientId).toBe('legacy-client-id');
+
+      // API_KEY no longer used as clientId fallback (was misleading)
+      expect(config.helpscout.clientId).toBe('');
       expect(config.helpscout.clientSecret).toBe('legacy-app-secret');
       expect(config.helpscout.apiKey).toBe('legacy-client-id');
     });
   });
 
-  describe('validateConfig with new naming', () => {
-    it('should pass with new OAuth2 naming (HELPSCOUT_CLIENT_ID/SECRET)', async () => {
+  describe('validateConfig with OAuth2', () => {
+    it('should pass with APP_ID/APP_SECRET', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('should pass with CLIENT_ID/CLIENT_SECRET', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'client-id';
       process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret';
 
@@ -67,27 +87,28 @@ describe('Authentication Configuration', () => {
       expect(() => validateConfig()).not.toThrow();
     });
 
-    it('should pass with legacy OAuth2 naming (HELPSCOUT_API_KEY/APP_SECRET)', async () => {
+    it('should reject legacy API_KEY without APP_ID', async () => {
       process.env.HELPSCOUT_API_KEY = 'client-id';
       process.env.HELPSCOUT_APP_SECRET = 'client-secret';
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      expect(() => validateConfig()).not.toThrow();
+      // API_KEY no longer used as clientId, so this should fail
+      expect(() => validateConfig()).toThrow(/OAuth2 authentication required/);
     });
 
-    it('should pass with Personal Access Token', async () => {
+    it('should throw error when Personal Access Token is used', async () => {
       process.env.HELPSCOUT_API_KEY = 'Bearer personal-access-token';
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      expect(() => validateConfig()).not.toThrow();
+      expect(() => validateConfig()).toThrow(/Personal Access Tokens are no longer supported/);
     });
 
     it('should throw error when no authentication is provided', async () => {
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      expect(() => validateConfig()).toThrow(/Authentication required/);
+      expect(() => validateConfig()).toThrow(/OAuth2 authentication required/);
     });
 
     it('should throw error when only client ID is provided', async () => {
@@ -95,7 +116,7 @@ describe('Authentication Configuration', () => {
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      expect(() => validateConfig()).toThrow(/Authentication required/);
+      expect(() => validateConfig()).toThrow(/OAuth2 authentication required/);
     });
 
     it('should throw error when only client secret is provided', async () => {
@@ -103,72 +124,101 @@ describe('Authentication Configuration', () => {
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      expect(() => validateConfig()).toThrow(/Authentication required/);
+      expect(() => validateConfig()).toThrow(/OAuth2 authentication required/);
     });
 
-    it('should throw helpful error message with both naming options', async () => {
+    it('should throw helpful error message mentioning APP_ID and APP_SECRET', async () => {
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
-      
+
       expect(() => validateConfig()).toThrow(
         expect.objectContaining({
-          message: expect.stringContaining('HELPSCOUT_CLIENT_ID and HELPSCOUT_CLIENT_SECRET')
+          message: expect.stringContaining('HELPSCOUT_APP_ID')
         })
       );
+    });
+
+    it('should enforce HTTPS for base URL', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_BASE_URL = 'http://api.helpscout.net/v2/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/Security Error.*HTTPS/);
     });
   });
 
   describe('Mixed naming scenarios', () => {
-    it('should handle mixed new and legacy naming for OAuth2', async () => {
+    it('should handle mixed APP_ID and legacy APP_SECRET', async () => {
+      process.env.HELPSCOUT_APP_ID = 'new-app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret';
+
+      jest.resetModules();
+      const { config, validateConfig } = await import('../utils/config.js');
+
+      expect(config.helpscout.clientId).toBe('new-app-id');
+      expect(config.helpscout.clientSecret).toBe('legacy-secret');
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('should handle CLIENT_ID with APP_SECRET', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'new-client-id';
       process.env.HELPSCOUT_APP_SECRET = 'legacy-secret';
 
       jest.resetModules();
       const { config, validateConfig } = await import('../utils/config.js');
-      
+
       expect(config.helpscout.clientId).toBe('new-client-id');
       expect(config.helpscout.clientSecret).toBe('legacy-secret');
       expect(() => validateConfig()).not.toThrow();
     });
-
-    it('should handle API key as both Personal Access Token and OAuth2', async () => {
-      // When API key is a Bearer token, it should be treated as Personal Access Token
-      process.env.HELPSCOUT_API_KEY = 'Bearer personal-token';
-      process.env.HELPSCOUT_CLIENT_ID = 'oauth-client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'oauth-secret';
-
-      jest.resetModules();
-      const { config, validateConfig } = await import('../utils/config.js');
-      
-      // Should pass validation due to Personal Access Token
-      expect(() => validateConfig()).not.toThrow();
-      expect(config.helpscout.apiKey).toBe('Bearer personal-token');
-      expect(config.helpscout.clientId).toBe('oauth-client-id');
-      expect(config.helpscout.clientSecret).toBe('oauth-secret');
-    });
   });
 
   describe('Config object structure', () => {
-    it('should have correct structure with new OAuth2 fields', async () => {
-      process.env.HELPSCOUT_CLIENT_ID = 'client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret';
+    it('should have correct structure with OAuth2 fields', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
 
       jest.resetModules();
       const { config } = await import('../utils/config.js');
-      
+
       expect(config.helpscout).toHaveProperty('apiKey');
       expect(config.helpscout).toHaveProperty('clientId');
       expect(config.helpscout).toHaveProperty('clientSecret');
       expect(config.helpscout).toHaveProperty('baseUrl');
+      expect(config.helpscout).toHaveProperty('defaultInboxId');
     });
 
     it('should set empty strings for missing values', async () => {
       jest.resetModules();
       const { config } = await import('../utils/config.js');
-      
+
       expect(config.helpscout.apiKey).toBe('');
       expect(config.helpscout.clientId).toBe('');
       expect(config.helpscout.clientSecret).toBe('');
+    });
+
+    it('should support HELPSCOUT_DEFAULT_INBOX_ID', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_DEFAULT_INBOX_ID = '12345';
+
+      jest.resetModules();
+      const { config } = await import('../utils/config.js');
+
+      expect(config.helpscout.defaultInboxId).toBe('12345');
+    });
+
+    it('should support REDACT_MESSAGE_CONTENT env var', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.REDACT_MESSAGE_CONTENT = 'true';
+
+      jest.resetModules();
+      const { config } = await import('../utils/config.js');
+
+      expect(config.security.allowPii).toBe(false);
     });
   });
 });

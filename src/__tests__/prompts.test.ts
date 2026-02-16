@@ -33,7 +33,7 @@ describe('PromptHandler', () => {
   describe('listPrompts', () => {
     it('should return all available prompts', async () => {
       const prompts = await promptHandler.listPrompts();
-      
+
       expect(prompts).toHaveLength(4);
       expect(prompts.map((p: any) => p.name)).toEqual([
         'helpscout-best-practices',
@@ -45,7 +45,7 @@ describe('PromptHandler', () => {
 
     it('should have proper prompt metadata', async () => {
       const prompts = await promptHandler.listPrompts();
-      
+
       prompts.forEach((prompt: any) => {
         expect(prompt).toHaveProperty('name');
         expect(prompt).toHaveProperty('description');
@@ -57,14 +57,14 @@ describe('PromptHandler', () => {
     it('should have search-last-7-days prompt with correct structure', async () => {
       const prompts = await promptHandler.listPrompts();
       const searchPrompt = prompts.find((p: any) => p.name === 'search-last-7-days');
-      
+
       expect(searchPrompt).toBeDefined();
       expect(searchPrompt!.description).toContain('last 7 days');
       expect(searchPrompt!.arguments).toHaveLength(3);
-      
+
       const argNames = searchPrompt!.arguments!.map((arg: any) => arg.name);
       expect(argNames).toEqual(['inboxId', 'status', 'tag']);
-      
+
       // All arguments should be optional
       searchPrompt!.arguments!.forEach((arg: any) => {
         expect(arg.required).toBe(false);
@@ -74,11 +74,11 @@ describe('PromptHandler', () => {
     it('should have find-urgent-tags prompt with correct structure', async () => {
       const prompts = await promptHandler.listPrompts();
       const urgentPrompt = prompts.find((p: any) => p.name === 'find-urgent-tags');
-      
+
       expect(urgentPrompt).toBeDefined();
       expect(urgentPrompt!.description).toContain('urgent or priority tags');
       expect(urgentPrompt!.arguments).toHaveLength(2);
-      
+
       const argNames = urgentPrompt!.arguments!.map((arg: any) => arg.name);
       expect(argNames).toEqual(['inboxId', 'timeframe']);
     });
@@ -86,19 +86,19 @@ describe('PromptHandler', () => {
     it('should have list-inbox-activity prompt with correct structure', async () => {
       const prompts = await promptHandler.listPrompts();
       const activityPrompt = prompts.find((p: any) => p.name === 'list-inbox-activity');
-      
+
       expect(activityPrompt).toBeDefined();
       expect(activityPrompt!.description).toContain('activity');
       expect(activityPrompt!.arguments).toHaveLength(3);
-      
+
       const argNames = activityPrompt!.arguments!.map((arg: any) => arg.name);
       expect(argNames).toEqual(['inboxId', 'hours', 'includeThreads']);
-      
+
       // Check required arguments
       const inboxIdArg = activityPrompt!.arguments!.find((arg: any) => arg.name === 'inboxId');
       const hoursArg = activityPrompt!.arguments!.find((arg: any) => arg.name === 'hours');
       const includeThreadsArg = activityPrompt!.arguments!.find((arg: any) => arg.name === 'includeThreads');
-      
+
       expect(inboxIdArg!.required).toBe(true);
       expect(hoursArg!.required).toBe(true);
       expect(includeThreadsArg!.required).toBe(false);
@@ -107,7 +107,7 @@ describe('PromptHandler', () => {
     it('should have helpscout-best-practices prompt with correct structure', async () => {
       const prompts = await promptHandler.listPrompts();
       const bestPracticesPrompt = prompts.find((p: any) => p.name === 'helpscout-best-practices');
-      
+
       expect(bestPracticesPrompt).toBeDefined();
       expect(bestPracticesPrompt!.description).toContain('workflow guide');
       expect(bestPracticesPrompt!.arguments).toHaveLength(0);
@@ -116,7 +116,7 @@ describe('PromptHandler', () => {
 
   describe('getPrompt', () => {
     describe('helpscout-best-practices prompt', () => {
-      it('should generate helpscout-best-practices prompt', async () => {
+      it('should generate helpscout-best-practices prompt with auto-discovered inbox guidance', async () => {
         const request = {
           method: 'prompts/get',
           params: {
@@ -126,18 +126,18 @@ describe('PromptHandler', () => {
         };
 
         const result = await promptHandler.getPrompt(request);
-        
+
         expect(result.description).toContain('workflow guide');
         expect(result.messages).toHaveLength(1);
         expect(result.messages[0].role).toBe('user');
         expect(result.messages[0].content.type).toBe('text');
-        
+
         const promptText = result.messages[0].content.text;
-        expect(promptText).toContain('Golden Rule');
-        expect(promptText).toContain('searchInboxes');
-        expect(promptText).toContain('comprehensiveConversationSearch');
-        expect(promptText).toContain('CRITICAL WORKFLOW');
-        expect(promptText).toContain('Common Pitfalls to Avoid');
+        // Updated prompt references auto-discovered inboxes
+        expect(promptText).toContain('Auto-Discovered');
+        expect(promptText).toContain('searchConversations');
+        expect(promptText).toContain('Tool Selection Guide');
+        expect(promptText).toContain('Workflow Patterns');
       });
     });
 
@@ -152,16 +152,16 @@ describe('PromptHandler', () => {
         };
 
         const result = await promptHandler.getPrompt(request);
-        
-        expect(result.description).toContain('searching conversations from the last 7 days');
+
+        expect(result.description).toContain('7 days');
         expect(result.messages).toHaveLength(1);
         expect(result.messages[0].role).toBe('user');
         expect(result.messages[0].content.type).toBe('text');
-        
+
         const promptText = result.messages[0].content.text;
         expect(promptText).toContain('getServerTime');
         expect(promptText).toContain('searchConversations');
-        expect(promptText).toContain('7 days ago');
+        expect(promptText).toContain('7 days');
       });
 
       it('should include inboxId when provided', async () => {
@@ -175,7 +175,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('"inboxId": "123"');
       });
 
@@ -190,7 +190,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('"status": "active"');
       });
 
@@ -205,7 +205,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('"tag": "support"');
       });
 
@@ -214,17 +214,17 @@ describe('PromptHandler', () => {
           method: 'prompts/get',
           params: {
             name: 'search-last-7-days',
-            arguments: { 
-              inboxId: '456', 
-              status: 'pending', 
-              tag: 'urgent' 
+            arguments: {
+              inboxId: '456',
+              status: 'pending',
+              tag: 'urgent'
             }
           }
         };
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('"inboxId": "456"');
         expect(promptText).toContain('"status": "pending"');
         expect(promptText).toContain('"tag": "urgent"');
@@ -242,10 +242,10 @@ describe('PromptHandler', () => {
         };
 
         const result = await promptHandler.getPrompt(request);
-        
+
         expect(result.description).toContain('urgent or priority tags');
         expect(result.messages).toHaveLength(1);
-        
+
         const promptText = result.messages[0].content.text;
         expect(promptText).toContain('urgent');
         expect(promptText).toContain('priority');
@@ -265,7 +265,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('"inboxId": "789"');
       });
 
@@ -280,7 +280,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('24h');
         expect(promptText).toContain('subtract 24 hours');
         expect(promptText).toContain('"createdAfter": "<calculated_time>"');
@@ -293,19 +293,19 @@ describe('PromptHandler', () => {
           method: 'prompts/get',
           params: {
             name: 'list-inbox-activity',
-            arguments: { 
-              inboxId: 'inbox-123', 
-              hours: 24 
+            arguments: {
+              inboxId: 'inbox-123',
+              hours: 24
             }
           }
         };
 
         const result = await promptHandler.getPrompt(request);
-        
-        expect(result.description).toContain('inbox inbox-123');
+
+        expect(result.description).toContain('inbox-123');
         expect(result.description).toContain('24 hours');
         expect(result.messages).toHaveLength(1);
-        
+
         const promptText = result.messages[0].content.text;
         expect(promptText).toContain('inbox-123');
         expect(promptText).toContain('24 hours');
@@ -319,8 +319,8 @@ describe('PromptHandler', () => {
           method: 'prompts/get',
           params: {
             name: 'list-inbox-activity',
-            arguments: { 
-              inboxId: 'inbox-456', 
+            arguments: {
+              inboxId: 'inbox-456',
               hours: 12,
               includeThreads: true
             }
@@ -329,8 +329,8 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
-        expect(promptText).toContain('getConversationSummary');
+
+        expect(promptText).toContain('includeTranscripts');
         expect(promptText).toContain('getThreads');
         expect(promptText).toContain('Since includeThreads is enabled');
       });
@@ -340,8 +340,8 @@ describe('PromptHandler', () => {
           method: 'prompts/get',
           params: {
             name: 'list-inbox-activity',
-            arguments: { 
-              inboxId: 'inbox-789', 
+            arguments: {
+              inboxId: 'inbox-789',
               hours: 6,
               includeThreads: false
             }
@@ -350,7 +350,7 @@ describe('PromptHandler', () => {
 
         const result = await promptHandler.getPrompt(request);
         const promptText = result.messages[0].content.text;
-        
+
         expect(promptText).toContain('For a quick overview');
         expect(promptText).not.toContain('Since includeThreads is enabled');
       });
@@ -388,9 +388,9 @@ describe('PromptHandler', () => {
           method: 'prompts/get',
           params: {
             name: 'list-inbox-activity',
-            arguments: { 
-              inboxId: 'inbox-123', 
-              hours: 'twenty-four' 
+            arguments: {
+              inboxId: 'inbox-123',
+              hours: 'twenty-four'
             }
           }
         };
@@ -431,6 +431,10 @@ describe('PromptHandler', () => {
       });
 
       it('should log prompt requests properly', async () => {
+        // Re-import to get the mocked logger as used by the module
+        const loggerModule = await import('../utils/logger.js');
+        const infoSpy = jest.spyOn(loggerModule.logger, 'info');
+
         const request = {
           method: 'prompts/get',
           params: {
@@ -441,17 +445,20 @@ describe('PromptHandler', () => {
 
         await promptHandler.getPrompt(request);
 
-        expect(mockLogger.info).toHaveBeenCalledWith('Prompt request started', expect.objectContaining({
+        expect(infoSpy).toHaveBeenCalledWith('Prompt request started', expect.objectContaining({
           promptName: 'search-last-7-days',
           arguments: { inboxId: 'test-123' }
         }));
 
-        expect(mockLogger.info).toHaveBeenCalledWith('Prompt request completed', expect.objectContaining({
+        expect(infoSpy).toHaveBeenCalledWith('Prompt request completed', expect.objectContaining({
           promptName: 'search-last-7-days'
         }));
       });
 
       it('should log errors properly', async () => {
+        const loggerModule = await import('../utils/logger.js');
+        const errorSpy = jest.spyOn(loggerModule.logger, 'error');
+
         const request = {
           method: 'prompts/get',
           params: {
@@ -466,7 +473,7 @@ describe('PromptHandler', () => {
           // Expected error
         }
 
-        expect(mockLogger.error).toHaveBeenCalledWith('Prompt request failed', expect.objectContaining({
+        expect(errorSpy).toHaveBeenCalledWith('Prompt request failed', expect.objectContaining({
           promptName: 'unknown-prompt',
           error: 'Unknown prompt: unknown-prompt'
         }));

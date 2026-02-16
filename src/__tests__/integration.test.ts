@@ -1,6 +1,42 @@
 import nock from 'nock';
-import { ToolHandler } from '../tools/index.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+
+// Mock config with dynamic getters so env vars set in beforeEach take effect
+jest.mock('../utils/config.js', () => ({
+  config: {
+    helpscout: {
+      get apiKey() { return process.env.HELPSCOUT_API_KEY || ''; },
+      get clientId() { return process.env.HELPSCOUT_APP_ID || process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
+      get clientSecret() { return process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || ''; },
+      get baseUrl() { return process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/'; },
+      get defaultInboxId() { return process.env.HELPSCOUT_DEFAULT_INBOX_ID; },
+      get docsApiKey() { return process.env.HELPSCOUT_DOCS_API_KEY || ''; },
+      get docsBaseUrl() { return process.env.HELPSCOUT_DOCS_BASE_URL || 'https://docsapi.helpscout.net/v1/'; },
+      get allowDocsDelete() { return process.env.HELPSCOUT_ALLOW_DOCS_DELETE === 'true'; },
+      get defaultDocsCollectionId() { return process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || ''; },
+      get defaultDocsSiteId() { return process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || ''; },
+      get disableDocs() { return process.env.HELPSCOUT_DISABLE_DOCS === 'true'; },
+    },
+    cache: { ttlSeconds: 300, maxSize: 10000 },
+    logging: { level: 'info' },
+    security: { allowPii: false },
+    responses: { get verbose() { return process.env.HELPSCOUT_VERBOSE_RESPONSES === 'true'; } },
+    connectionPool: {
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout: 30000,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+    },
+  },
+  validateConfig: jest.fn(),
+  isVerbose: (args: unknown) => {
+    if (args && typeof args === 'object' && 'verbose' in args && typeof (args as any).verbose === 'boolean') {
+      return (args as any).verbose;
+    }
+    return process.env.HELPSCOUT_VERBOSE_RESPONSES === 'true';
+  },
+}));
 
 // Mock logger to reduce test output noise
 jest.mock('../utils/logger.js', () => ({
@@ -12,9 +48,20 @@ jest.mock('../utils/logger.js', () => ({
   },
 }));
 
+// Mock cache
+jest.mock('../utils/cache.js', () => ({
+  cache: {
+    get: jest.fn(() => null),
+    set: jest.fn(),
+    clear: jest.fn(),
+  },
+}));
+
+import { ToolHandler } from '../tools/index.js';
+
 /**
  * Integration Tests for Complete User Workflows
- * 
+ *
  * These tests simulate real user scenarios from start to finish,
  * testing the complete chain of operations that users actually perform.
  */
@@ -27,22 +74,22 @@ describe('Complete User Workflows - Integration Tests', () => {
     process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
     process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
     process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
-    
+
     // Clean all nock interceptors and restore HTTP
     nock.cleanAll();
     nock.restore();
     nock.activate();
-    
+
     // Mock OAuth2 authentication endpoint
-    nock(baseURL)
+    nock('https://api.helpscout.net')
       .persist()
-      .post('/oauth2/token')
+      .post('/v2/oauth2/token')
       .reply(200, {
         access_token: 'mock-access-token',
         token_type: 'Bearer',
         expires_in: 3600,
       });
-    
+
     toolHandler = new ToolHandler();
   });
 
@@ -50,10 +97,10 @@ describe('Complete User Workflows - Integration Tests', () => {
     nock.cleanAll();
   });
 
-  describe('Workflow 1: Search by Inbox Name → Find Conversations → Get Details', () => {
+  describe('Workflow 1: Search by Inbox Name -> Find Conversations -> Get Details', () => {
     it('should complete the full customer support workflow', async () => {
       // SCENARIO: User wants to "find urgent tickets in the support inbox from last week"
-      
+
       // Step 1: Mock inbox search
       const mockInboxes = [
         { id: '123', name: 'Support', email: 'support@company.com' },
@@ -84,8 +131,8 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       nock(baseURL)
         .get('/conversations')
-        .query(params => 
-          params.mailbox === '123' && 
+        .query(params =>
+          params.mailbox === '123' &&
           params.query === 'urgent' &&
           params.status === 'active'
         )
@@ -119,7 +166,7 @@ describe('Complete User Workflows - Integration Tests', () => {
         .reply(200, mockThreads);
 
       // Execute the complete workflow
-      
+
       // User input: "find urgent tickets in the support inbox"
       toolHandler.setUserContext('find urgent tickets in the support inbox');
 
@@ -179,10 +226,10 @@ describe('Complete User Workflows - Integration Tests', () => {
     });
   });
 
-  describe('Workflow 2: Comprehensive Multi-Status Search → Analysis', () => {
+  describe('Workflow 2: Comprehensive Multi-Status Search -> Analysis', () => {
     it('should handle complex search across all conversation statuses', async () => {
       // SCENARIO: Manager wants to "analyze all billing-related conversations from the last month"
-      
+
       // Mock comprehensive search across all statuses
       const mockActiveConversations = {
         _embedded: { conversations: [
@@ -207,27 +254,28 @@ describe('Complete User Workflows - Integration Tests', () => {
       };
 
       // Set up nock interceptors for each status
+      // Note: query includes createdAt filter appended by the tool
       nock(baseURL)
         .get('/conversations')
-        .query(params => 
-          params.status === 'active' && 
-          params.query === '(body:"billing" OR subject:"billing")'
+        .query(params =>
+          params.status === 'active' &&
+          (params.query as string).includes('body:"billing"')
         )
         .reply(200, mockActiveConversations);
 
       nock(baseURL)
         .get('/conversations')
-        .query(params => 
-          params.status === 'pending' && 
-          params.query === '(body:"billing" OR subject:"billing")'
+        .query(params =>
+          params.status === 'pending' &&
+          (params.query as string).includes('body:"billing"')
         )
         .reply(200, mockPendingConversations);
 
       nock(baseURL)
         .get('/conversations')
-        .query(params => 
-          params.status === 'closed' && 
-          params.query === '(body:"billing" OR subject:"billing")'
+        .query(params =>
+          params.status === 'closed' &&
+          (params.query as string).includes('body:"billing"')
         )
         .reply(200, mockClosedConversations);
 
@@ -235,10 +283,9 @@ describe('Complete User Workflows - Integration Tests', () => {
       const comprehensiveSearchRequest: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'comprehensiveConversationSearch',
+          name: 'searchConversations',
           arguments: {
             searchTerms: ['billing'],
-            statuses: ['active', 'pending', 'closed'],
             timeframeDays: 30
           }
         }
@@ -250,7 +297,7 @@ describe('Complete User Workflows - Integration Tests', () => {
       // Verify comprehensive analysis
       expect(response.totalConversationsFound).toBe(4);
       expect(response.resultsByStatus).toHaveLength(3);
-      
+
       // Verify status-specific results
       const activeResults = response.resultsByStatus.find((r: any) => r.status === 'active');
       const pendingResults = response.resultsByStatus.find((r: any) => r.status === 'pending');
@@ -260,16 +307,16 @@ describe('Complete User Workflows - Integration Tests', () => {
       expect(pendingResults.conversations).toHaveLength(1);
       expect(closedResults.conversations).toHaveLength(2);
 
-      // Verify search metadata
-      expect(response.searchTerms).toEqual(['billing']);
-      expect(response.timeframe.days).toBe(30);
+      // Verify search metadata - new compact shape
+      expect(response.query).toContain('body:"billing"');
+      expect(response.totalAvailable).toBe(4);
     });
   });
 
   describe('Workflow 3: Advanced Search with Complex Criteria', () => {
     it('should handle advanced search with multiple criteria types', async () => {
       // SCENARIO: "Find all conversations from VIP customers about refunds in the last 7 days"
-      
+
       const mockAdvancedResults = {
         _embedded: {
           conversations: [
@@ -291,7 +338,7 @@ describe('Complete User Workflows - Integration Tests', () => {
         .query(params => {
           // Verify complex query construction
           const query = params.query as string;
-          return !!(query && 
+          return !!(query &&
                    query.includes('body:"refund"') &&
                    query.includes('subject:"refund"') &&
                    query.includes('tag:"vip"'));
@@ -301,7 +348,7 @@ describe('Complete User Workflows - Integration Tests', () => {
       const advancedSearchRequest: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'advancedConversationSearch',
+          name: 'searchConversations',
           arguments: {
             contentTerms: ['refund'],
             subjectTerms: ['refund'],
@@ -317,15 +364,18 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       expect(response.results).toHaveLength(1);
       expect(response.results[0].subject).toContain('Refund');
-      expect(response.searchCriteria.contentTerms).toEqual(['refund']);
-      expect(response.searchCriteria.tags).toEqual(['vip']);
+      // New compact shape: query is a string, no searchCriteria object
+      expect(response.query).toContain('body:"refund"');
+      expect(response.query).toContain('tag:"vip"');
+      expect(response.pagination).toBeDefined();
+      expect(response.pagination.returned).toBe(1);
     });
   });
 
   describe('Workflow 4: Error Recovery and Validation', () => {
     it('should guide users through correct workflow when they skip steps', async () => {
       // SCENARIO: User tries to search without getting inbox ID first
-      
+
       toolHandler.setUserContext('search conversations in the billing inbox for overdue payments');
 
       // User incorrectly tries to search without inbox ID
@@ -357,7 +407,7 @@ describe('Complete User Workflows - Integration Tests', () => {
   describe('Workflow 5: Real-time Customer Support Scenario', () => {
     it('should support live customer support workflow', async () => {
       // SCENARIO: Support agent gets escalation, needs to quickly find customer history
-      
+
       // Customer email: jane@bigcorp.com
       // Agent needs: Recent conversations, conversation summary, thread details
 
@@ -373,7 +423,7 @@ describe('Complete User Workflows - Integration Tests', () => {
               customer: { id: 10, firstName: 'Jane', lastName: 'Smith', email: 'jane@bigcorp.com' }
             },
             {
-              id: 202, 
+              id: 202,
               subject: 'New escalation - urgent',
               status: 'active',
               createdAt: '2024-01-22T00:00:00Z',
@@ -410,7 +460,7 @@ describe('Complete User Workflows - Integration Tests', () => {
             },
             {
               id: 2,
-              type: 'message', 
+              type: 'message',
               body: 'I understand your frustration. Let me escalate this immediately.',
               createdAt: '2024-01-22T09:30:00Z',
               createdBy: { id: 5, firstName: 'Agent', lastName: 'Jones' }
@@ -425,7 +475,7 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       nock(baseURL)
         .get('/conversations/202/threads')
-        .query({ page: 1, size: 50 })
+        .query({ page: 1, size: 200 })
         .reply(200, summaryThreads);
 
       // Execute customer support workflow
@@ -434,7 +484,7 @@ describe('Complete User Workflows - Integration Tests', () => {
       const customerSearchRequest: CallToolRequest = {
         method: 'tools/call',
         params: {
-          name: 'advancedConversationSearch',
+          name: 'searchConversations',
           arguments: {
             customerEmail: 'jane@bigcorp.com'
           }
@@ -443,13 +493,13 @@ describe('Complete User Workflows - Integration Tests', () => {
 
       const customerResult = await toolHandler.callTool(customerSearchRequest);
       const customerResponse = JSON.parse((customerResult.content[0] as any).text);
-      
+
       expect(customerResponse.results).toHaveLength(2);
       const latestConversation = customerResponse.results
         .sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
       expect(latestConversation.subject).toContain('escalation');
 
-      // Step 2: Get conversation summary 
+      // Step 2: Get conversation summary
       const summaryRequest: CallToolRequest = {
         method: 'tools/call',
         params: {
@@ -462,11 +512,11 @@ describe('Complete User Workflows - Integration Tests', () => {
       const summaryResponse = JSON.parse((summaryResult.content[0] as any).text);
 
       expect(summaryResponse.conversation.subject).toBe('New escalation - urgent');
-      expect(summaryResponse.firstCustomerMessage.body).toContain('[REDACTED]'); // PII protection
-      expect(summaryResponse.latestStaffReply.body).toContain('[REDACTED]'); // PII protection
+      expect(summaryResponse.firstCustomerMessage.body).toContain('[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]'); // PII protection
+      expect(summaryResponse.latestStaffReply.body).toContain('[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]'); // PII protection
 
       // Workflow provides agent with complete customer context
-      expect(summaryResponse.conversation.assignee.firstName).toBe('Agent');
+      expect(summaryResponse.conversation.assignee.first).toBe('Agent');
     });
   });
 });

@@ -67,8 +67,6 @@ describe('DXT Extension Validation', () => {
         'getConversationSummary',
         'getThreads',
         'getServerTime',
-        'advancedConversationSearch',
-        'comprehensiveConversationSearch',
         'listAllInboxes'
       ];
 
@@ -207,11 +205,9 @@ describe('DXT Extension Validation', () => {
       const expectedExports = [
         'searchInboxes',
         'searchConversations',
-        'getConversationSummary', 
+        'getConversationSummary',
         'getThreads',
-        'getServerTime',
-        'advancedConversationSearch',
-        'comprehensiveConversationSearch'
+        'getServerTime'
       ];
 
       expectedExports.forEach(exportName => {

@@ -1,5 +1,30 @@
-import { HelpScoutClient } from '../utils/helpscout-client.js';
 import nock from 'nock';
+
+// Mock config with dynamic getters
+jest.mock('../utils/config.js', () => ({
+  config: {
+    helpscout: {
+      get apiKey() { return process.env.HELPSCOUT_API_KEY || ''; },
+      get clientId() { return process.env.HELPSCOUT_APP_ID || process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
+      get clientSecret() { return process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || ''; },
+      get baseUrl() { return process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/'; },
+      get defaultInboxId() { return process.env.HELPSCOUT_DEFAULT_INBOX_ID; },
+    },
+    cache: { ttlSeconds: 300, maxSize: 10000 },
+    logging: { level: 'info' },
+    security: { allowPii: false },
+    responses: { verbose: false },
+    connectionPool: {
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout: 30000,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+    },
+  },
+  validateConfig: jest.fn(),
+  isVerbose: jest.fn(() => false),
+}));
 
 // Mock logger to reduce test output noise
 jest.mock('../utils/logger.js', () => ({
@@ -11,6 +36,17 @@ jest.mock('../utils/logger.js', () => ({
   },
 }));
 
+// Mock cache
+jest.mock('../utils/cache.js', () => ({
+  cache: {
+    get: jest.fn(() => null),
+    set: jest.fn(),
+    clear: jest.fn(),
+  },
+}));
+
+import { HelpScoutClient } from '../utils/helpscout-client.js';
+
 describe('HelpScout Client - Connection Pooling', () => {
   const baseURL = 'https://api.helpscout.net/v2';
   let client: HelpScoutClient;
@@ -20,16 +56,14 @@ describe('HelpScout Client - Connection Pooling', () => {
     process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
     process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
     process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
-    
+
     // Clean all nock interceptors
     nock.cleanAll();
-    nock.restore();
-    nock.activate();
-    
+
     // Mock OAuth2 authentication endpoint
-    nock(baseURL)
+    nock('https://api.helpscout.net')
       .persist()
-      .post('/oauth2/token')
+      .post('/v2/oauth2/token')
       .reply(200, {
         access_token: 'mock-access-token',
         token_type: 'Bearer',

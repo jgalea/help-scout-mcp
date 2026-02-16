@@ -60,7 +60,7 @@ describe('HelpScoutAPIConstraints', () => {
       expect(result.errors).toContain('Invalid conversation ID format');
     });
 
-    it('should suggest comprehensiveConversationSearch for searches without status', () => {
+    it('should suggest searchTerms for searches without status', () => {
       const context: ToolCallContext = {
         toolName: 'searchConversations',
         arguments: { query: 'urgent refund' },
@@ -71,21 +71,7 @@ describe('HelpScoutAPIConstraints', () => {
       const result = HelpScoutAPIConstraints.validateToolCall(context);
 
       expect(result.isValid).toBe(true);
-      expect(result.suggestions.some(s => s.includes('comprehensiveConversationSearch for better results'))).toBe(true);
-    });
-
-    it('should validate comprehensiveConversationSearch searchTerms', () => {
-      const context: ToolCallContext = {
-        toolName: 'comprehensiveConversationSearch',
-        arguments: {},
-        userQuery: '',
-        previousCalls: []
-      };
-
-      const result = HelpScoutAPIConstraints.validateToolCall(context);
-
-      expect(result.isValid).toBe(false);
-      expect(result.errors).toContain('searchTerms is required and must be a non-empty array');
+      expect(result.suggestions.some(s => s.includes('searchTerms'))).toBe(true);
     });
   });
 

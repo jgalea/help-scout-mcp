@@ -1,4 +1,56 @@
 import nock from 'nock';
+
+// Mock config with dynamic getters so env vars set in beforeEach take effect
+jest.mock('../utils/config.js', () => ({
+  config: {
+    helpscout: {
+      get apiKey() { return process.env.HELPSCOUT_API_KEY || ''; },
+      get clientId() { return process.env.HELPSCOUT_APP_ID || process.env.HELPSCOUT_CLIENT_ID || process.env.HELPSCOUT_API_KEY || ''; },
+      get clientSecret() { return process.env.HELPSCOUT_APP_SECRET || process.env.HELPSCOUT_CLIENT_SECRET || ''; },
+      get baseUrl() { return process.env.HELPSCOUT_BASE_URL || 'https://api.helpscout.net/v2/'; },
+      get defaultInboxId() { return process.env.HELPSCOUT_DEFAULT_INBOX_ID; },
+      get docsApiKey() { return process.env.HELPSCOUT_DOCS_API_KEY || ''; },
+      get docsBaseUrl() { return process.env.HELPSCOUT_DOCS_BASE_URL || 'https://docsapi.helpscout.net/v1/'; },
+      get allowDocsDelete() { return process.env.HELPSCOUT_ALLOW_DOCS_DELETE === 'true'; },
+      get defaultDocsCollectionId() { return process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || ''; },
+      get defaultDocsSiteId() { return process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || ''; },
+      get disableDocs() { return process.env.HELPSCOUT_DISABLE_DOCS === 'true'; },
+    },
+    cache: { ttlSeconds: 300, maxSize: 10000 },
+    logging: { level: 'info' },
+    security: { allowPii: false },
+    responses: { verbose: false },
+    connectionPool: {
+      maxSockets: 50,
+      maxFreeSockets: 10,
+      timeout: 30000,
+      keepAlive: true,
+      keepAliveMsecs: 1000,
+    },
+  },
+  validateConfig: jest.fn(),
+  isVerbose: jest.fn(() => false),
+}));
+
+// Mock logger to reduce test output noise
+jest.mock('../utils/logger.js', () => ({
+  logger: {
+    info: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+    warn: jest.fn(),
+  },
+}));
+
+// Mock cache
+jest.mock('../utils/cache.js', () => ({
+  cache: {
+    get: jest.fn(() => null),
+    set: jest.fn(),
+    clear: jest.fn(),
+  },
+}));
+
 import { ResourceHandler } from '../resources/index.js';
 
 describe('ResourceHandler', () => {
@@ -6,23 +58,23 @@ describe('ResourceHandler', () => {
   const baseURL = 'https://api.helpscout.net/v2';
 
   beforeEach(() => {
-    // Mock environment for tests
+    // Set environment for tests
     process.env.HELPSCOUT_CLIENT_ID = 'test-client-id';
     process.env.HELPSCOUT_CLIENT_SECRET = 'test-client-secret';
     process.env.HELPSCOUT_BASE_URL = `${baseURL}/`;
-    
+
     nock.cleanAll();
-    
+
     // Mock OAuth2 authentication endpoint
-    nock(baseURL)
+    nock('https://api.helpscout.net')
       .persist()
-      .post('/oauth2/token')
+      .post('/v2/oauth2/token')
       .reply(200, {
         access_token: 'mock-access-token',
         token_type: 'Bearer',
         expires_in: 3600,
       });
-    
+
     resourceHandler = new ResourceHandler();
   });
 
@@ -33,22 +85,23 @@ describe('ResourceHandler', () => {
   });
 
   describe('listResources', () => {
-    it('should return all available resources', async () => {
+    it('should return available resources with at least core resources', async () => {
       const resources = await resourceHandler.listResources();
-      
-      expect(resources).toHaveLength(4);
-      expect(resources.map(r => r.uri)).toEqual([
-        'helpscout://inboxes',
-        'helpscout://conversations',
-        'helpscout://threads',
-        'helpscout://clock'
-      ]);
+
+      // Core resources should always be present
+      const coreUris = resources.map(r => r.uri).filter(uri => uri.startsWith('helpscout://'));
+      expect(coreUris).toContain('helpscout://inboxes');
+      expect(coreUris).toContain('helpscout://conversations');
+      expect(coreUris).toContain('helpscout://threads');
+      expect(coreUris).toContain('helpscout://clock');
     });
 
-    it('should have proper resource metadata', async () => {
+    it('should have proper resource metadata on listResources', async () => {
       const resources = await resourceHandler.listResources();
-      
-      resources.forEach(resource => {
+
+      // listResources returns Resource[] which includes name/description
+      const coreResources = resources.filter(r => r.uri.startsWith('helpscout://'));
+      coreResources.forEach(resource => {
         expect(resource).toHaveProperty('uri');
         expect(resource).toHaveProperty('name');
         expect(resource).toHaveProperty('description');
@@ -59,7 +112,7 @@ describe('ResourceHandler', () => {
 
   describe('handleResource', () => {
     describe('helpscout://inboxes', () => {
-      it('should fetch inboxes resource', async () => {
+      it('should fetch inboxes resource as TextResourceContents', async () => {
         const mockResponse = {
           _embedded: {
             mailboxes: [
@@ -76,11 +129,13 @@ describe('ResourceHandler', () => {
           .reply(200, mockResponse);
 
         const resource = await resourceHandler.handleResource('helpscout://inboxes');
-        
+
+        // TextResourceContents has uri, mimeType, text - no name/description
         expect(resource.uri).toBe('helpscout://inboxes');
-        expect(resource.name).toBe('Help Scout Inboxes');
         expect(resource.mimeType).toBe('application/json');
-        
+        expect(resource).not.toHaveProperty('name');
+        expect(resource).not.toHaveProperty('description');
+
         const data = JSON.parse(resource.text as string);
         expect(data.inboxes).toHaveLength(1);
         expect(data.inboxes[0].name).toBe('Support');
@@ -103,12 +158,12 @@ describe('ResourceHandler', () => {
     });
 
     describe('helpscout://conversations', () => {
-      it('should fetch conversations resource', async () => {
+      it('should fetch conversations resource as TextResourceContents', async () => {
         const mockResponse = {
           _embedded: {
             conversations: [
-              { 
-                id: 1, 
+              {
+                id: 1,
                 subject: 'Test Conversation',
                 status: 'active',
                 customer: { id: 1, firstName: 'John', lastName: 'Doe' }
@@ -125,11 +180,13 @@ describe('ResourceHandler', () => {
           .reply(200, mockResponse);
 
         const resource = await resourceHandler.handleResource('helpscout://conversations');
-        
+
+        // TextResourceContents - no name/description
         expect(resource.uri).toBe('helpscout://conversations');
-        expect(resource.name).toBe('Help Scout Conversations');
-        expect(resource.description).toBe('Conversations matching the specified filters');
-        
+        expect(resource.mimeType).toBe('application/json');
+        expect(resource).not.toHaveProperty('name');
+        expect(resource).not.toHaveProperty('description');
+
         const data = JSON.parse(resource.text as string);
         expect(data.conversations).toHaveLength(1);
         expect(data.conversations[0].subject).toBe('Test Conversation');
@@ -153,7 +210,6 @@ describe('ResourceHandler', () => {
           'helpscout://conversations?status=active&mailbox=123'
         );
         expect(resource).toBeDefined();
-        expect(resource.name).toBe('Help Scout Conversations');
       });
 
       it('should handle pagination parameters', async () => {
@@ -171,7 +227,7 @@ describe('ResourceHandler', () => {
         const resource = await resourceHandler.handleResource(
           'helpscout://conversations?page=2&size=25'
         );
-        
+
         const data = JSON.parse(resource.text as string);
         expect(data.pagination.number).toBe(2);
         expect(data.pagination.size).toBe(25);
@@ -204,7 +260,7 @@ describe('ResourceHandler', () => {
     });
 
     describe('helpscout://threads', () => {
-      it('should fetch threads resource', async () => {
+      it('should fetch threads resource as TextResourceContents', async () => {
         const mockResponse = {
           _embedded: {
             threads: [
@@ -228,11 +284,13 @@ describe('ResourceHandler', () => {
         const resource = await resourceHandler.handleResource(
           'helpscout://threads?conversationId=123'
         );
-        
+
+        // TextResourceContents - no name/description
         expect(resource.uri).toBe('helpscout://threads?conversationId=123');
-        expect(resource.name).toBe('Help Scout Thread Messages');
-        expect(resource.description).toBe('All messages in conversation 123');
-        
+        expect(resource.mimeType).toBe('application/json');
+        expect(resource).not.toHaveProperty('name');
+        expect(resource).not.toHaveProperty('description');
+
         const data = JSON.parse(resource.text as string);
         expect(data.conversationId).toBe('123');
         expect(data.threads).toHaveLength(1);
@@ -258,7 +316,7 @@ describe('ResourceHandler', () => {
         const resource = await resourceHandler.handleResource(
           'helpscout://threads?conversationId=123&page=2&size=25'
         );
-        
+
         const data = JSON.parse(resource.text as string);
         expect(data.pagination.number).toBe(2);
         expect(data.pagination.size).toBe(25);
@@ -285,7 +343,7 @@ describe('ResourceHandler', () => {
         const resource = await resourceHandler.handleResource(
           'helpscout://threads?conversationId=456'
         );
-        
+
         const data = JSON.parse(resource.text as string);
         expect(data.conversationId).toBe('456');
         expect(data.threads).toHaveLength(0);
@@ -293,13 +351,15 @@ describe('ResourceHandler', () => {
     });
 
     describe('helpscout://clock', () => {
-      it('should return server time', async () => {
+      it('should return server time as TextResourceContents', async () => {
         const resource = await resourceHandler.handleResource('helpscout://clock');
-        
+
+        // TextResourceContents - no name/description
         expect(resource.uri).toBe('helpscout://clock');
-        expect(resource.name).toBe('Server Time');
         expect(resource.mimeType).toBe('application/json');
-        
+        expect(resource).not.toHaveProperty('name');
+        expect(resource).not.toHaveProperty('description');
+
         const data = JSON.parse(resource.text as string);
         expect(data).toHaveProperty('isoTime');
         expect(data).toHaveProperty('unixTime');

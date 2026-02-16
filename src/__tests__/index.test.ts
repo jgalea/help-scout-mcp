@@ -1,6 +1,16 @@
 // Mock all dependencies BEFORE importing the module under test
 jest.mock('../utils/config.js', () => ({
   validateConfig: jest.fn(),
+  isVerbose: jest.fn(() => false),
+  config: {
+    helpscout: {
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      baseUrl: 'https://api.helpscout.net/v2/',
+    },
+    security: { allowPii: false },
+    responses: { verbose: false },
+  },
 }));
 
 jest.mock('../utils/logger.js', () => ({
@@ -16,13 +26,17 @@ jest.mock('../utils/helpscout-client.js', () => ({
   helpScoutClient: {
     testConnection: jest.fn(() => Promise.resolve(true)),
     closePool: jest.fn(() => Promise.resolve()),
+    get: jest.fn(() => Promise.resolve({
+      _embedded: { mailboxes: [{ id: 1, name: 'Support', email: 'support@test.com' }] },
+      page: { size: 100, totalElements: 1 },
+    })),
   },
 }));
 
 jest.mock('../resources/index.js', () => ({
   resourceHandler: {
     listResources: jest.fn(() => Promise.resolve([])),
-    handleResource: jest.fn(() => Promise.resolve({ type: 'text', text: 'test' })),
+    handleResource: jest.fn(() => Promise.resolve({ uri: 'helpscout://test', mimeType: 'application/json', text: '{}' })),
   },
 }));
 
@@ -40,7 +54,7 @@ jest.mock('../prompts/index.js', () => ({
   },
 }));
 
-// Mock the MCP SDK 
+// Mock the MCP SDK
 const mockServer = {
   setRequestHandler: jest.fn(),
   connect: jest.fn(() => Promise.resolve()),
@@ -87,37 +101,38 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
     jest.clearAllMocks();
   });
 
-  describe('Constructor & Initialization', () => {
-    it('should create server with correct MCP configuration', () => {
+  describe('Factory Method & Initialization', () => {
+    it('should create server with correct MCP configuration via async create()', async () => {
       const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
-      
-      new HelpScoutMCPServer();
-      
+
+      await HelpScoutMCPServer.create();
+
       expect(Server).toHaveBeenCalledWith(
         {
           name: 'helpscout-search',
-          version: '1.3.0',
+          version: '1.7.0',
         },
-        {
+        expect.objectContaining({
           capabilities: {
             resources: {},
             tools: {},
             prompts: {},
           },
-        }
+          instructions: expect.any(String),
+        })
       );
     });
 
-    it('should register ALL 6 MCP protocol handlers', () => {
-      new HelpScoutMCPServer();
-      
+    it('should register ALL 6 MCP protocol handlers', async () => {
+      await HelpScoutMCPServer.create();
+
       // Should register: ListResources, ReadResource, ListTools, CallTool, ListPrompts, GetPrompt
       expect(mockServer.setRequestHandler).toHaveBeenCalledTimes(6);
-      
+
       // Verify the specific handlers
       const registeredSchemas = mockServer.setRequestHandler.mock.calls.map(call => call[0]);
       const handlerMethods = registeredSchemas.map(schema => schema.method);
-      
+
       expect(handlerMethods).toContain('resources/list');
       expect(handlerMethods).toContain('resources/read');
       expect(handlerMethods).toContain('tools/list');
@@ -125,18 +140,28 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       expect(handlerMethods).toContain('prompts/list');
       expect(handlerMethods).toContain('prompts/get');
     });
+
+    it('should auto-discover inboxes during create()', async () => {
+      const { logger } = require('../utils/logger.js');
+
+      await HelpScoutMCPServer.create();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'MCP server created with auto-discovered inboxes',
+        expect.objectContaining({ inboxCount: expect.any(Number) })
+      );
+    });
   });
 
   describe('Server Lifecycle - CORE APPLICATION BEHAVIOR', () => {
     let server: HelpScoutMCPServer;
 
-    beforeEach(() => {
-      server = new HelpScoutMCPServer();
+    beforeEach(async () => {
+      server = await HelpScoutMCPServer.create();
     });
 
     it('should start successfully with proper initialization sequence', async () => {
       const { validateConfig } = require('../utils/config.js');
-      const { helpScoutClient } = require('../utils/helpscout-client.js');
       const { logger } = require('../utils/logger.js');
       const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 
@@ -144,49 +169,32 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
 
       // Verify the complete startup sequence
       expect(validateConfig).toHaveBeenCalled();
-      expect(helpScoutClient.testConnection).toHaveBeenCalled();
       expect(mockServer.connect).toHaveBeenCalled();
-      
+
       // Verify logging of each step
       expect(logger.info).toHaveBeenCalledWith('Configuration validated');
-      expect(logger.info).toHaveBeenCalledWith('Help Scout API connection established');
       expect(logger.info).toHaveBeenCalledWith('Help Scout MCP Server started successfully');
-      
+
       // Verify console output for CLI users
       expect(mockConsoleError).toHaveBeenCalledWith('Help Scout MCP Server started and listening on stdio');
-      
+
       // Verify transport was created
       expect(StdioServerTransport).toHaveBeenCalled();
-      
+
       // Verify process.stdin.resume was called to keep the process running
       expect(process.stdin.resume).toHaveBeenCalled();
-    });
-
-    it('should handle Help Scout connection failure', async () => {
-      const { helpScoutClient } = require('../utils/helpscout-client.js');
-      const { logger } = require('../utils/logger.js');
-      
-      helpScoutClient.testConnection.mockResolvedValue(false);
-
-      await expect(server.start()).rejects.toThrow('process.exit() was called');
-      
-      expect(logger.error).toHaveBeenCalledWith('Failed to start server', 
-        expect.objectContaining({ error: 'Failed to connect to Help Scout API' })
-      );
-      expect(mockConsoleError).toHaveBeenCalledWith('MCP Server startup failed:', 'Failed to connect to Help Scout API');
-      expect(mockExit).toHaveBeenCalledWith(1);
     });
 
     it('should handle configuration validation failure', async () => {
       const { validateConfig } = require('../utils/config.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const configError = new Error('Invalid configuration');
       validateConfig.mockImplementation(() => { throw configError; });
 
       await expect(server.start()).rejects.toThrow('process.exit() was called');
-      
-      expect(logger.error).toHaveBeenCalledWith('Failed to start server', 
+
+      expect(logger.error).toHaveBeenCalledWith('Failed to start server',
         expect.objectContaining({ error: 'Invalid configuration' })
       );
       expect(mockConsoleError).toHaveBeenCalledWith('MCP Server startup failed:', 'Invalid configuration');
@@ -209,24 +217,24 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       const stopError = new Error('Failed to close server');
       mockServer.close.mockRejectedValue(stopError);
 
-      // The stop method catches errors and logs them, but doesn't re-throw
+      // The stop method catches errors and logs them, but does not re-throw
       await server.stop(); // Should complete without throwing
-      
-      expect(logger.error).toHaveBeenCalledWith('Error stopping server', { 
-        error: 'Failed to close server' 
+
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Failed to close server'
       });
     });
   });
 
   describe('MCP Protocol Handler Integration - THE REAL DEAL', () => {
-    beforeEach(() => {
-      new HelpScoutMCPServer();
+    beforeEach(async () => {
+      await HelpScoutMCPServer.create();
     });
 
     it('should integrate resources handler correctly', async () => {
       const { resourceHandler } = require('../resources/index.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockResources = [{ uri: 'helpscout://inboxes', name: 'Inboxes' }];
       resourceHandler.listResources.mockResolvedValue(mockResources);
 
@@ -247,7 +255,7 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
     it('should integrate tools handler correctly', async () => {
       const { toolHandler } = require('../tools/index.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockTools = [{ name: 'searchInboxes' }];
       toolHandler.listTools.mockResolvedValue(mockTools);
 
@@ -268,7 +276,7 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
     it('should integrate prompts handler correctly', async () => {
       const { promptHandler } = require('../prompts/index.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockPrompts = [{ name: 'search-last-7-days' }];
       promptHandler.listPrompts.mockResolvedValue(mockPrompts);
 
@@ -289,7 +297,7 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
     it('should handle tool calls with proper logging', async () => {
       const { toolHandler } = require('../tools/index.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockResult = { content: [{ type: 'text', text: 'search results' }] };
       toolHandler.callTool.mockResolvedValue(mockResult);
 
@@ -300,27 +308,27 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       expect(callToolCall).toBeDefined();
 
       const handler = callToolCall[1];
-      const request = { 
-        params: { 
-          name: 'searchInboxes', 
-          arguments: { query: 'test' } 
-        } 
+      const request = {
+        params: {
+          name: 'searchInboxes',
+          arguments: { query: 'test' }
+        }
       };
       const result = await handler(request);
 
       expect(result).toEqual(mockResult);
       expect(toolHandler.callTool).toHaveBeenCalledWith(request);
-      expect(logger.debug).toHaveBeenCalledWith('Calling tool', { 
-        name: 'searchInboxes', 
-        arguments: { query: 'test' } 
+      expect(logger.debug).toHaveBeenCalledWith('Calling tool', {
+        name: 'searchInboxes',
+        arguments: { query: 'test' }
       });
     });
 
     it('should handle resource reads with proper logging', async () => {
       const { resourceHandler } = require('../resources/index.js');
       const { logger } = require('../utils/logger.js');
-      
-      const mockResource = { type: 'text', text: 'inbox data' };
+
+      const mockResource = { uri: 'helpscout://inboxes', mimeType: 'application/json', text: 'inbox data' };
       resourceHandler.handleResource.mockResolvedValue(mockResource);
 
       // Get the actual registered handler
@@ -335,15 +343,15 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
 
       expect(result).toEqual({ contents: [mockResource] });
       expect(resourceHandler.handleResource).toHaveBeenCalledWith('helpscout://inboxes');
-      expect(logger.debug).toHaveBeenCalledWith('Reading resource', { 
-        uri: 'helpscout://inboxes' 
+      expect(logger.debug).toHaveBeenCalledWith('Reading resource', {
+        uri: 'helpscout://inboxes'
       });
     });
 
     it('should handle prompt requests with proper logging', async () => {
       const { promptHandler } = require('../prompts/index.js');
       const { logger } = require('../utils/logger.js');
-      
+
       const mockPrompt = { messages: [{ role: 'user', content: 'search prompt' }] };
       promptHandler.getPrompt.mockResolvedValue(mockPrompt);
 
@@ -354,19 +362,19 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       expect(getPromptCall).toBeDefined();
 
       const handler = getPromptCall[1];
-      const request = { 
-        params: { 
-          name: 'search-last-7-days', 
-          arguments: { inboxId: '123' } 
-        } 
+      const request = {
+        params: {
+          name: 'search-last-7-days',
+          arguments: { inboxId: '123' }
+        }
       };
       const result = await handler(request);
 
       expect(result).toEqual(mockPrompt);
       expect(promptHandler.getPrompt).toHaveBeenCalledWith(request);
-      expect(logger.debug).toHaveBeenCalledWith('Getting prompt', { 
-        name: 'search-last-7-days', 
-        arguments: { inboxId: '123' } 
+      expect(logger.debug).toHaveBeenCalledWith('Getting prompt', {
+        name: 'search-last-7-days',
+        arguments: { inboxId: '123' }
       });
     });
   });
@@ -374,32 +382,34 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
   describe('Error Handler Branch Coverage', () => {
     it('should handle server stop errors gracefully', async () => {
       const { logger } = require('../utils/logger.js');
-      const server = new HelpScoutMCPServer();
-      
+      const server = await HelpScoutMCPServer.create();
+
       // Mock server.close to throw an error
       mockServer.close.mockRejectedValueOnce(new Error('Failed to close server'));
-      
+
       // The stop method should handle errors gracefully
       await server.stop(); // Should not throw
-      
-      expect(logger.error).toHaveBeenCalledWith('Error stopping server', { 
-        error: 'Failed to close server' 
+
+      expect(logger.error).toHaveBeenCalledWith('Error stopping server', {
+        error: 'Failed to close server'
       });
     });
 
     it('should handle missing environment configuration gracefully', async () => {
       const { validateConfig } = require('../utils/config.js');
       const { logger } = require('../utils/logger.js');
-      
-      // Mock missing required environment variables
-      const configError = new Error('Missing required environment variables');
-      validateConfig.mockImplementationOnce(() => { throw configError; });
 
-      const server = new HelpScoutMCPServer();
-      
+      // Mock missing required environment variables
+      // create() catches the first validateConfig error and falls back
+      // start() calls validateConfig again and this time it throws
+      const configError = new Error('Invalid configuration');
+      validateConfig.mockImplementation(() => { throw configError; });
+
+      const server = await HelpScoutMCPServer.create();
+
       await expect(server.start()).rejects.toThrow('process.exit() was called');
-      expect(logger.error).toHaveBeenCalledWith('Failed to start server', 
-        expect.objectContaining({ error: 'Missing required environment variables' })
+      expect(logger.error).toHaveBeenCalledWith('Failed to start server',
+        expect.objectContaining({ error: 'Invalid configuration' })
       );
     });
 
@@ -407,24 +417,24 @@ describe('HelpScoutMCPServer - THE ACTUAL APPLICATION', () => {
       const { validateConfig } = require('../utils/config.js');
       const { helpScoutClient } = require('../utils/helpscout-client.js');
       const { logger } = require('../utils/logger.js');
-      
-      // Ensure mocks are working properly
-      validateConfig.mockImplementationOnce(() => {});
+
+      // Ensure mocks are working properly for both create() and start() calls
+      validateConfig.mockImplementation(() => {});
       helpScoutClient.testConnection.mockResolvedValueOnce(true);
-      
-      const server = new HelpScoutMCPServer();
+
+      const server = await HelpScoutMCPServer.create();
       await server.start();
-      
+
       expect(logger.info).toHaveBeenCalledWith('Help Scout MCP Server started successfully');
       expect(process.stdin.resume).toHaveBeenCalled();
     });
   });
 
-  describe('CLI Auto-Start Logic - FIXED!', () => {
+  describe('CLI Auto-Start Logic', () => {
     it('should NOT auto-start during tests', () => {
       // Since we're in a test environment, the main() function should not execute
       // This test passing means our CLI detection fix worked!
-      
+
       // If auto-start was happening, this test would hang or have side effects
       expect(true).toBe(true); // Test completes = CLI detection working
     });
