@@ -1,6 +1,7 @@
 import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
+import { isVerbose } from '../utils/config.js';
 import { z } from 'zod';
 
 /**
@@ -869,14 +870,8 @@ export class ReportsToolHandler extends Injectable {
             {
               type: 'text',
               text: JSON.stringify({
-                error: 'Docs API key not configured',
-                message: 'This tool requires HELPSCOUT_DOCS_API_KEY to be set',
-                troubleshooting: [
-                  '1. Go to https://secure.helpscout.net/settings/docs/code',
-                  '2. Generate a Docs API Key',
-                  '3. Set HELPSCOUT_DOCS_API_KEY environment variable'
-                ],
-              }, null, 2),
+                error: 'Docs API key not configured. Set HELPSCOUT_DOCS_API_KEY environment variable.',
+              }),
             },
           ],
         };
@@ -977,39 +972,22 @@ export class ReportsToolHandler extends Injectable {
             {
               type: 'text',
               text: JSON.stringify({
-                message: 'No articles found',
-                troubleshooting: [
-                  'No published articles exist in the specified collections/sites',
-                  'All articles have zero views',
-                  'Check if the collection/site IDs are correct'
-                ],
-                alternativeTools: [
-                  'Use "listDocsSites" to see available sites',
-                  'Use "listDocsCollections" to see available collections',
-                  'Use "getTopDocsArticles" with natural language queries'
-                ],
-              }, null, 2),
+                error: 'No articles found',
+              }),
             },
           ],
         };
       }
 
       // Format the response using Docs API structure
-      const topArticles: TopArticle[] = sortedArticles.map((article: any) => ({
+      const topArticles = isVerbose(args) ? sortedArticles : sortedArticles.map((article: any) => ({
         id: article.id,
         title: article.name,
         collectionId: article.collectionId,
-        collectionName: '', // Not available in article ref
-        siteId: '', // Not available in article ref
-        siteName: '', // Not available in article ref
         views: article.viewCount || article.popularity || 0,
-        visitors: 0, // Not available in Docs API
-        avgTimeOnPage: 0, // Not available in Docs API
-        bounceRate: 0, // Not available in Docs API
         url: article.publicUrl,
         createdAt: article.createdAt,
         updatedAt: article.updatedAt,
-        lastViewedAt: '', // Not available in Docs API
       }));
 
       return {
@@ -1018,26 +996,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               totalArticles: sortedArticles.length,
-              topArticles: input.includeStats ? topArticles : topArticles.map(a => ({
+              topArticles: isVerbose(args) ? topArticles : (input.includeStats ? topArticles : topArticles.map((a: any) => ({
                 id: a.id,
-                title: a.title,
-                views: a.views,
-                url: a.url,
-              })),
-              summary: {
-                totalViews: topArticles.reduce((sum, a) => sum + a.views, 0),
-                avgViews: Math.round(topArticles.reduce((sum, a) => sum + a.views, 0) / topArticles.length),
-                mostViewed: topArticles[0] ? {
-                  title: topArticles[0].title,
-                  views: topArticles[0].views,
-                } : null,
-              },
-              filters: {
-                sites: input.sites,
-                collections: input.collections,
-              },
-              note: 'Data from Help Scout Docs API sorted by popularity (view count)'
-            }, null, 2),
+                title: a.title || a.name,
+                views: a.views || a.viewCount || 0,
+                url: a.url || a.publicUrl,
+              }))),
+            }),
           },
         ],
       };
@@ -1051,17 +1016,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch articles',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Check if HELPSCOUT_DOCS_API_KEY is set correctly',
-                'Verify the collection/site IDs are valid',
-                'Ensure you have at least one Docs site configured'
-              ],
-              alternativeTools: [
-                'Use "getTopDocsArticles" for natural language queries',
-                'Use "listDocsSites" to see available sites',
-                'Use "listDocsCollections" to see available collections'
-              ],
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1094,8 +1049,8 @@ export class ReportsToolHandler extends Injectable {
       let response: any;
       try {
         response = await reportsApiClient.getReport<DocsReportResponse>('/reports/docs', params);
-      } catch (error: any) {
-        logger.error('Failed to get docs report', { error: error.message });
+      } catch (error: unknown) {
+        logger.error('Failed to get docs report', { error: error instanceof Error ? error.message : String(error) });
         response = null;
       }
       
@@ -1106,26 +1061,8 @@ export class ReportsToolHandler extends Injectable {
             {
               type: 'text',
               text: JSON.stringify({
-                error: 'Docs Reports endpoint not found',
-                message: 'The Help Scout API returned "Unknown URL" for the /v2/reports/docs endpoint.',
-                details: 'This endpoint may not be available in the current Help Scout API version.',
-                troubleshooting: [
-                  '1. The Docs Reports endpoint (/reports/docs) may not exist in the Help Scout API',
-                  '2. Your Help Scout plan may not include Docs Reports (requires Plus or Pro plan)',
-                  '3. This specific report type might have been deprecated or not yet implemented',
-                  '4. Try using other report endpoints like getEmailReport, getChatReport, or getHappinessReport instead'
-                ],
-                alternativeTools: [
-                  'Use "getTopArticles" to get popular articles using the Docs API',
-                  'Use "getTopDocsArticles" for natural language queries',
-                  'Contact Help Scout support to enable Reports API access'
-                ],
-                requestedFilters: {
-                  start: input.start,
-                  end: input.end,
-                  sites: input.sites,
-                },
-              }, null, 2),
+                error: 'Docs Reports endpoint not found. The /v2/reports/docs endpoint may not be available for your plan.',
+              }),
             },
           ],
         };
@@ -1137,16 +1074,7 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                sites: input.sites,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1160,18 +1088,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Docs report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Try using "getTopArticles" as an alternative'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                sites: input.sites,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1219,25 +1136,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-                viewBy: input.viewBy,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Chat Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1245,20 +1150,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Chat report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Verify chat is enabled for your mailboxes'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1306,25 +1198,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-                viewBy: input.viewBy,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Email Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1332,20 +1212,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Email report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Email reports are available for all Help Scout accounts'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1393,25 +1260,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-                viewBy: input.viewBy,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Phone Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1419,20 +1274,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Phone report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Verify phone support is enabled for your mailboxes'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1488,27 +1330,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                user: input.user,
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-                viewBy: input.viewBy,
-                officeHours: input.officeHours,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('User Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1516,22 +1344,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch User report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Standard plan Account Owners can add access via an add-on',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'If user ID is provided, verify it exists and is active'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                user: input.user,
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1579,25 +1392,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-                viewBy: input.viewBy,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Company Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1605,20 +1406,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Company report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Company reports provide organization-wide metrics'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1675,27 +1463,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               report: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-                types: input.types,
-                rating: input.rating,
-                viewBy: input.viewBy,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-                ...(input.previousStart && { previousStart: input.previousStart }),
-                ...(input.previousEnd && { previousEnd: input.previousEnd }),
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Happiness Reports API error', { error });
-      
+
       return {
         content: [
           {
@@ -1703,22 +1477,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Happiness report',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Happiness ratings must be enabled in your account settings'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                folders: input.folders,
-                tags: input.tags,
-                types: input.types,
-                rating: input.rating,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1776,28 +1535,13 @@ export class ReportsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               ratings: response,
-              filters: {
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-                rating: input.rating,
-              },
-              period: {
-                start: input.start,
-                end: input.end,
-              },
-              pagination: {
-                page: input.page,
-                sortField: input.sortField,
-                sortOrder: input.sortOrder,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
     } catch (error) {
       logger.error('Happiness Ratings API error', { error });
-      
+
       return {
         content: [
           {
@@ -1805,22 +1549,7 @@ export class ReportsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to fetch Happiness ratings',
               message: error instanceof Error ? error.message : String(error),
-              troubleshooting: [
-                'Verify your Help Scout plan includes Reports API access (Plus/Pro required)',
-                'Check if your OAuth token has Reports permissions',
-                'Ensure the date range is valid (start < end)',
-                'Happiness ratings must be enabled in your account settings',
-                'Note: rating values are "great", "ok", "not-good" (not "okay" or "bad")'
-              ],
-              requestedFilters: {
-                start: input.start,
-                end: input.end,
-                mailboxes: input.mailboxes,
-                tags: input.tags,
-                types: input.types,
-                rating: input.rating,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };

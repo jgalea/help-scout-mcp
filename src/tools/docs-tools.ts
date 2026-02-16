@@ -2,6 +2,7 @@ import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk
 import { DocsPaginatedResponse } from '../utils/helpscout-docs-client.js';
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
+import { isVerbose } from '../utils/config.js';
 import { z } from 'zod';
 import {
   DocsSite,
@@ -1232,15 +1233,7 @@ export class DocsToolHandler extends Injectable {
                 pages: response.pages || 0,
                 count: response.count || 0,
               } : {},
-              warning: 'No Help Scout Docs sites found. Please verify:',
-              troubleshooting: [
-                '1. Your API key has Docs permissions (check at https://secure.helpscout.net/authentication/api)',
-                '2. Help Scout Docs is enabled for your account',
-                '3. At least one Docs site exists in your account',
-                '4. The HELPSCOUT_DOCS_API_KEY environment variable is set correctly'
-              ],
-              usage: 'Once sites are available, use the "id" field from these sites when filtering collections',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1251,21 +1244,13 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            sites: filteredSites,
-            ...(input.query && { 
-              matchInfo: scoredSites.map(s => ({
-                site: s.site.name || s.site.subdomain || s.site.id,
-                score: s.score,
-                reason: s.reason
-              }))
-            }),
+            sites: isVerbose(args) ? filteredSites : filteredSites.map((s: any) => ({ id: s.id, title: s.title || s.name, subDomain: s.subDomain || s.subdomain, cname: s.cname, hasPublicSite: s.hasPublicSite })),
             pagination: {
               page: response.page,
               pages: response.pages,
               count: response.count,
             },
-            usage: 'Use the "id" field from these sites when filtering collections',
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1350,9 +1335,7 @@ export class DocsToolHandler extends Injectable {
                     pages: response.pages || 0,
                     count: response.count || 0,
                   } : {},
-                  warning: 'No collections found. Try specifying a siteId parameter.',
-                  suggestion: 'First use listDocsSites to get available site IDs, then pass a siteId to this tool',
-                }, null, 2),
+                }),
               },
             ],
           };
@@ -1364,23 +1347,12 @@ export class DocsToolHandler extends Injectable {
               type: 'text',
               text: JSON.stringify({
                 collections: [],
-                site: {
-                  id: targetSiteId,
-                  name: siteName,
-                },
-                query: input.query,
                 pagination: response.page ? {
                   page: response.page,
                   pages: response.pages || 0,
                   count: response.count || 0,
                 } : {},
-                warning: 'No collections found for this site.',
-                troubleshooting: [
-                  '1. Verify the site is correct',
-                  '2. Check if collections exist for this site in Help Scout',
-                  '3. Ensure your API key has access to this site\'s collections'
-                ],
-              }, null, 2),
+              }),
             },
           ],
         };
@@ -1391,19 +1363,13 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              collections: response.items,
-              site: targetSiteId ? {
-                id: targetSiteId,
-                name: siteName,
-              } : undefined,
-              query: input.query,
+              collections: isVerbose(args) ? response.items : response.items.map((c: any) => ({ id: c.id, siteId: c.siteId, name: c.name, visibility: c.visibility, publicUrl: c.publicUrl, articleCount: c.publishedArticleCount ?? c.articleCount })),
               pagination: {
                 page: response.page,
                 pages: response.pages,
                 count: response.count,
               },
-              usage: 'Use the "id" field to access categories and articles within these collections',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1431,15 +1397,13 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            categories: response.items,
-            collectionId: input.collectionId,
+            categories: isVerbose(args) ? (response.items || []) : (response.items || []).map((c: any) => ({ id: c.id, name: c.name, collectionId: c.collectionId, visibility: c.visibility, articleCount: c.publishedArticleCount ?? c.articleCount })),
             pagination: {
               page: response.page,
               pages: response.pages,
               count: response.count,
             },
-            usage: 'Use the "id" field to list articles within these categories',
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1470,15 +1434,13 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            articles: response.items,
-            collectionId: input.collectionId,
+            articles: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, viewCount: a.viewCount, collectionId: a.collectionId })),
             pagination: {
               page: response.page,
               pages: response.pages,
               count: response.count,
             },
-            usage: 'Use getDocsArticle with the "id" field to retrieve full article content',
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1509,15 +1471,13 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            articles: response.items,
-            categoryId: input.categoryId,
+            articles: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, viewCount: a.viewCount, collectionId: a.collectionId })),
             pagination: {
               page: response.page,
               pages: response.pages,
               count: response.count,
             },
-            usage: 'Use getDocsArticle with the "id" field to retrieve full article content',
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1526,26 +1486,46 @@ export class DocsToolHandler extends Injectable {
   private async getDocsArticle(args: unknown): Promise<CallToolResult> {
     const input = GetDocsArticleInputSchema.parse(args);
     const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
-    
+    const verbose = isVerbose(args);
+
     const endpoint = input.draft ? `/articles/${input.articleId}/draft` : `/articles/${input.articleId}`;
     const article = await helpScoutDocsClient.get<DocsArticle>(endpoint);
 
-    // Handle PII redaction for article content
-    const processedArticle = {
-      ...article,
-      text: config.security.allowPii ? article.text : '[REDACTED - Set ALLOW_PII=true to view article content]',
-    };
-
-    return {
-      content: [
-        {
+    // Verbose: return full article with all fields
+    if (verbose) {
+      return {
+        content: [{
           type: 'text',
           text: JSON.stringify({
-            article: processedArticle,
-            usage: 'Use updateDocsArticle to modify this article',
-          }, null, 2),
-        },
-      ],
+            article: {
+              ...article,
+              text: config.security.allowPii ? article.text : '[REDACTED - Set ALLOW_PII=true to view article content]',
+            },
+          }),
+        }],
+      };
+    }
+
+    // Slim: key metadata + content (without _links, styles, etc.)
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          article: {
+            id: (article as any).id,
+            name: (article as any).name,
+            status: (article as any).status,
+            publicUrl: (article as any).publicUrl,
+            collectionId: (article as any).collectionId,
+            categories: (article as any).categories,
+            related: (article as any).related,
+            viewCount: (article as any).viewCount,
+            text: config.security.allowPii ? article.text : '[REDACTED - Set ALLOW_PII=true to view article content]',
+            createdAt: (article as any).createdAt,
+            updatedAt: (article as any).updatedAt,
+          },
+        }),
+      }],
     };
   }
 
@@ -1571,10 +1551,8 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            success: true,
             article: updatedArticle,
-            updated: Object.keys(updateData),
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1601,10 +1579,8 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            success: true,
             collection: updatedCollection,
-            updated: Object.keys(updateData),
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1631,10 +1607,8 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            success: true,
             category: updatedCategory,
-            updated: Object.keys(updateData),
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -1743,15 +1717,7 @@ export class DocsToolHandler extends Injectable {
                 type: 'text',
                 text: JSON.stringify({
                   error: 'No Docs sites found',
-                  message: 'Unable to retrieve top articles because no Help Scout Docs sites are available.',
-                  troubleshooting: [
-                    '1. Verify your HELPSCOUT_DOCS_API_KEY is set correctly',
-                    '2. Check that your API key has Docs permissions at https://secure.helpscout.net/authentication/api',
-                    '3. Ensure Help Scout Docs is enabled for your account',
-                    '4. Confirm at least one Docs site exists in your account'
-                  ],
-                  alternativeApproach: 'If you know a specific collection ID, you can pass it as a parameter to this tool',
-                }, null, 2),
+                }),
               },
             ],
           };
@@ -1771,10 +1737,7 @@ export class DocsToolHandler extends Injectable {
                 type: 'text',
                 text: JSON.stringify({
                   error: 'No collections found',
-                  message: 'No collections found in the available Docs site.',
-                  siteId,
-                  suggestion: 'Create collections in your Help Scout Docs to start tracking article popularity',
-                }, null, 2),
+                }),
               },
             ],
           };
@@ -1817,9 +1780,7 @@ export class DocsToolHandler extends Injectable {
                   updatedAt: article.updatedAt,
                 })),
                 totalArticles: sortedArticles.length,
-                collectionsSearched: collectionsResponse.items.slice(0, 5).length,
-                note: 'Articles sorted by popularity (view count)',
-              }, null, 2),
+              }),
             },
           ],
         };
@@ -1847,14 +1808,7 @@ export class DocsToolHandler extends Injectable {
                 pages: response.pages,
                 count: response.count,
               },
-              collection: {
-                id: targetCollectionId,
-                name: collectionName,
-                site: siteName,
-              },
-              query: input.query,
-              note: 'Articles sorted by popularity (view count)',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -1869,14 +1823,7 @@ export class DocsToolHandler extends Injectable {
               type: 'text',
               text: JSON.stringify({
                 error: 'Authentication failed',
-                message: 'Unable to authenticate with Help Scout Docs API.',
-                troubleshooting: [
-                  '1. Verify HELPSCOUT_DOCS_API_KEY is set correctly',
-                  '2. Check that the API key is valid and not expired',
-                  '3. Ensure the API key has Docs permissions'
-                ],
-                apiKeyFormat: 'The API key should be a string like "1234567890abcdef"',
-              }, null, 2),
+              }),
             },
           ],
         };
@@ -1887,15 +1834,10 @@ export class DocsToolHandler extends Injectable {
   }
 
   private async testDocsConnection(): Promise<CallToolResult> {
-    const { helpScoutDocsClient, config, logger } = this.services.resolve(['helpScoutDocsClient', 'config', 'logger']);
-    
+    const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+
     const results: Record<string, any> = {
       timestamp: new Date().toISOString(),
-      configuration: {
-        hasDocsApiKey: !!config.helpscout.docsApiKey,
-        docsApiKeyLength: config.helpscout.docsApiKey?.length || 0,
-        docsBaseUrl: config.helpscout.docsBaseUrl,
-      },
       tests: {}
     };
 
@@ -1930,24 +1872,10 @@ export class DocsToolHandler extends Injectable {
     try {
       const sitesResponse = await helpScoutDocsClient.get<any>('/sites', { page: 1 });
       
-      // Log the exact response structure
-      logger.info('Sites API raw response', {
-        responseType: typeof sitesResponse,
-        responseKeys: sitesResponse && typeof sitesResponse === 'object' ? Object.keys(sitesResponse) : [],
-        hasItems: !!(sitesResponse && sitesResponse.items),
-        itemsLength: sitesResponse?.items?.length || 0,
-        firstItem: sitesResponse?.items?.[0],
-      });
-      
       results.tests.sites = {
         success: true,
         siteCount: sitesResponse.items?.length || 0,
-        sites: sitesResponse.items || [],
-        rawResponse: sitesResponse,
-        responseStructure: {
-          type: typeof sitesResponse,
-          keys: sitesResponse && typeof sitesResponse === 'object' ? Object.keys(sitesResponse) : [],
-        }
+        sites: (sitesResponse.items || []).map((s: any) => ({ id: s.id, title: s.title, subDomain: s.subDomain })),
       };
       
       // Test 3a: If we have sites, try to get collections from the first one
@@ -1962,54 +1890,27 @@ export class DocsToolHandler extends Injectable {
             success: true,
             siteId: firstSiteId,
             collectionCount: collectionsResponse.items?.length || 0,
-            collections: collectionsResponse.items || []
+            collections: (collectionsResponse.items || []).map((c: any) => ({ id: c.id, name: c.name, articleCount: c.publishedArticleCount })),
           };
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const err = error as Record<string, any>;
           results.tests.collections = {
             success: false,
             siteId: firstSiteId,
-            error: error.message || 'Unknown error',
-            statusCode: error.response?.status,
-            errorCode: error.code,
-            details: error.details
+            error: error instanceof Error ? error.message : 'Unknown error',
+            statusCode: err.response?.status,
+            errorCode: err.code,
+            details: err.details
           };
         }
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const err = error as Record<string, any>;
       results.tests.sites = {
         success: false,
-        error: error.message || 'Unknown error',
-        statusCode: error.response?.status,
-        errorCode: error.code
-      };
-    }
-
-    // Test 4: Try a raw request to debug authentication
-    try {
-      const axios = (await import('axios')).default;
-      const testResponse = await axios.get('https://docsapi.helpscout.net/v1/sites', {
-        auth: {
-          username: config.helpscout.docsApiKey || '',
-          password: 'X'
-        },
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'HelpScout-MCP-Server'
-        }
-      });
-      
-      results.tests.rawRequest = {
-        success: true,
-        status: testResponse.status,
-        hasData: !!testResponse.data,
-        dataKeys: Object.keys(testResponse.data || {})
-      };
-    } catch (error: any) {
-      results.tests.rawRequest = {
-        success: false,
-        error: error.message,
-        status: error.response?.status,
-        responseData: error.response?.data
+        error: error instanceof Error ? error.message : 'Unknown error',
+        statusCode: err.response?.status,
+        errorCode: err.code
       };
     }
 
@@ -2024,17 +1925,8 @@ export class DocsToolHandler extends Injectable {
             ...results,
             summary: {
               allTestsPassed,
-              recommendation: allTestsPassed 
-                ? 'Docs API is properly configured and accessible'
-                : 'There are issues with the Docs API configuration or access. Check the test results above.',
-              nextSteps: !allTestsPassed ? [
-                'Verify HELPSCOUT_DOCS_API_KEY is set correctly',
-                'Check that the API key has proper permissions at https://secure.helpscout.net/settings/docs/code',
-                'Ensure Help Scout Docs is enabled for your account',
-                'Confirm at least one Docs site exists in your account'
-              ] : []
             }
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -2065,11 +1957,8 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            success: true,
-            message: 'Docs API cache cleared',
             clearedPatterns: endpointsToClean,
-            note: 'Next API calls will fetch fresh data from Help Scout',
-          }, null, 2),
+          }),
         },
       ],
     };
@@ -2111,13 +2000,7 @@ export class DocsToolHandler extends Injectable {
               sites: result,
               totalSites: result.length,
               totalCollections: result.reduce((sum, site) => sum + site.collections.length, 0),
-              usage: 'Use collection names in natural language queries or collection IDs for direct access',
-              examples: [
-                'getTopDocsArticles with query: "GravityKit articles"',
-                'getTopDocsArticles with query: "TrustedLogin docs"',
-                'getTopDocsArticles with collectionId: "<specific-id>"'
-              ]
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2129,8 +2012,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to list collections',
               message: error instanceof Error ? error.message : String(error),
-              suggestion: 'Try running clearDocsCache first, then retry'
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2147,7 +2029,6 @@ export class DocsToolHandler extends Injectable {
     
     try {
       let targetSiteId: string;
-      let matchInfo: any = null;
       
       // If siteId is provided directly, use it
       if (input.siteId) {
@@ -2168,27 +2049,17 @@ export class DocsToolHandler extends Injectable {
                 type: 'text',
                 text: JSON.stringify({
                   error: 'No matching site found',
-                  query: input.query,
-                  suggestion: 'Try using "listDocsSites" to see available sites',
-                }, null, 2),
+                }),
               },
             ],
           };
         }
         
         targetSiteId = siteMatch.site.id;
-        matchInfo = {
-          matchedSite: siteMatch.site.name || siteMatch.site.subdomain,
-          matchScore: siteMatch.matchScore,
-          matchReason: siteMatch.matchReason,
-        };
       }
       // Use default site if available
       else if (config.helpscout.defaultDocsSiteId) {
         targetSiteId = config.helpscout.defaultDocsSiteId;
-        matchInfo = {
-          note: 'Using default site from configuration',
-        };
       }
       // No way to determine site
       else {
@@ -2198,8 +2069,7 @@ export class DocsToolHandler extends Injectable {
               type: 'text',
               text: JSON.stringify({
                 error: 'No site specified',
-                suggestion: 'Provide either a query, siteId, or configure HELPSCOUT_DEFAULT_DOCS_SITE_ID',
-              }, null, 2),
+              }),
             },
           ],
         };
@@ -2214,24 +2084,11 @@ export class DocsToolHandler extends Injectable {
       
       const collections = response.items || [];
       
-      // Get site details if we need them
-      const sitesResponse = await helpScoutDocsClient.get<DocsPaginatedResponse<DocsSite>>('/sites', {
-        page: 1,
-      });
-      
-      const site = sitesResponse.items?.find(s => s.id === targetSiteId);
-      
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              site: {
-                id: targetSiteId,
-                name: site?.name || site?.subdomain || 'Unknown',
-                subdomain: site?.subdomain,
-              },
-              ...(matchInfo && { matchInfo }),
               collections: collections.map(col => ({
                 id: col.id,
                 name: col.name,
@@ -2244,7 +2101,7 @@ export class DocsToolHandler extends Injectable {
               totalCollections: collections.length,
               page: response.page || 1,
               totalPages: response.pages || 1,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2256,8 +2113,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to get site collections',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2295,20 +2151,13 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              query: input.query,
-              results: response.items || [],
+              results: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, collectionId: a.collectionId, preview: a.preview || a.text?.substring(0, 200) })),
               pagination: {
                 page: response.page,
                 pages: response.pages,
                 count: response.count,
               },
-              filters: {
-                collectionId: input.collectionId,
-                categoryId: input.categoryId,
-                visibility: input.visibility,
-                status: input.status,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2320,8 +2169,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to search articles',
               message: error instanceof Error ? error.message : String(error),
-              query: input.query,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2362,9 +2210,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Article created successfully',
               article: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2376,8 +2223,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to create article',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2400,7 +2246,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Article deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable article deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2414,9 +2260,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Article deleted successfully',
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2429,7 +2274,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete article',
               message: error instanceof Error ? error.message : String(error),
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2454,10 +2299,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'View count updated successfully',
-              articleId: input.articleId,
               viewsAdded: input.count,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2470,7 +2313,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to update view count',
               message: error instanceof Error ? error.message : String(error),
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2505,15 +2348,9 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              articleId: input.articleId,
               relatedArticles: response.items || [],
               count: response.count || 0,
-              filters: {
-                status: input.status,
-                sort: input.sort,
-                order: input.order,
-              },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2526,7 +2363,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get related articles',
               message: error instanceof Error ? error.message : String(error),
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2559,9 +2396,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Category created successfully',
               category: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2573,8 +2409,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to create category',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2597,7 +2432,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Category deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable category deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2611,9 +2446,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Category deleted successfully',
               categoryId: input.categoryId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2626,7 +2460,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete category',
               message: error instanceof Error ? error.message : String(error),
               categoryId: input.categoryId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2659,9 +2493,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Collection created successfully',
               collection: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2673,8 +2506,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to create collection',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2697,7 +2529,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Collection deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable collection deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2711,9 +2543,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Collection deleted successfully',
               collectionId: input.collectionId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2726,7 +2557,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete collection',
               message: error instanceof Error ? error.message : String(error),
               collectionId: input.collectionId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2753,14 +2584,13 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              articleId: input.articleId,
               revisions: response.items || [],
               pagination: {
                 page: response.page,
                 pages: response.pages,
                 count: response.count,
               },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2773,7 +2603,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to list article revisions',
               message: error instanceof Error ? error.message : String(error),
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2803,7 +2633,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               revision: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2816,7 +2646,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get article revision',
               message: error instanceof Error ? error.message : String(error),
               revisionId: input.revisionId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2849,9 +2679,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Draft saved successfully',
               draft: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2864,7 +2693,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to save article draft',
               message: error instanceof Error ? error.message : String(error),
               articleId: input.articleId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2886,7 +2715,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Draft deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable draft deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2900,9 +2729,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Draft deleted successfully',
               draftId: input.draftId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2915,7 +2743,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete article draft',
               message: error instanceof Error ? error.message : String(error),
               draftId: input.draftId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2962,10 +2790,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Article uploaded successfully',
               article: response,
-              sourceFile: input.filePath,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -2978,7 +2804,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to upload article',
               message: error instanceof Error ? error.message : String(error),
               filePath: input.filePath,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3016,10 +2842,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Article asset created successfully',
               asset: response,
-              fileName: fileName,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3032,7 +2856,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to create article asset',
               message: error instanceof Error ? error.message : String(error),
               filePath: input.filePath,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3067,10 +2891,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Settings asset created successfully',
               asset: response,
-              assetType: input.assetType,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3084,7 +2906,7 @@ export class DocsToolHandler extends Injectable {
               message: error instanceof Error ? error.message : String(error),
               filePath: input.filePath,
               assetType: input.assetType,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3110,7 +2932,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               category: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3123,7 +2945,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get category',
               message: error instanceof Error ? error.message : String(error),
               categoryId: input.categoryId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3148,7 +2970,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               collection: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3161,7 +2983,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get collection',
               message: error instanceof Error ? error.message : String(error),
               collectionId: input.collectionId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3186,7 +3008,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               site: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3199,7 +3021,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get site',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3226,10 +3048,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Category order updated successfully',
-              collectionId: input.collectionId,
               newOrder: input.categoryIds,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3242,7 +3062,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to update category order',
               message: error instanceof Error ? error.message : String(error),
               collectionId: input.collectionId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3269,14 +3089,13 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              siteId: input.siteId,
               redirects: response.items || [],
               pagination: {
                 page: response.page,
                 pages: response.pages,
                 count: response.count,
               },
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3289,7 +3108,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to list redirects',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3314,7 +3133,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               redirect: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3327,7 +3146,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get redirect',
               message: error instanceof Error ? error.message : String(error),
               redirectId: input.redirectId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3354,8 +3173,7 @@ export class DocsToolHandler extends Injectable {
             type: 'text',
             text: JSON.stringify({
               redirect: response,
-              searchUrl: input.url,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3369,7 +3187,7 @@ export class DocsToolHandler extends Injectable {
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
               url: input.url,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3399,9 +3217,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Redirect created successfully',
               redirect: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3413,8 +3230,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to create redirect',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3447,9 +3263,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Redirect updated successfully',
               redirect: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3462,7 +3277,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to update redirect',
               message: error instanceof Error ? error.message : String(error),
               redirectId: input.redirectId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3484,7 +3299,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Redirect deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable redirect deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3498,9 +3313,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Redirect deleted successfully',
               redirectId: input.redirectId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3513,7 +3327,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete redirect',
               message: error instanceof Error ? error.message : String(error),
               redirectId: input.redirectId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3546,9 +3360,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Site created successfully',
               site: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3560,8 +3373,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to create site',
               message: error instanceof Error ? error.message : String(error),
-              input,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3596,9 +3408,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Site updated successfully',
               site: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3611,7 +3422,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to update site',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3633,7 +3444,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Site deletion is disabled',
               message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable site deletion',
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3647,9 +3458,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Site deleted successfully',
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3662,7 +3472,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to delete site',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3681,15 +3491,14 @@ export class DocsToolHandler extends Injectable {
       const response = await helpScoutDocsClient.get<any>(
         `/sites/${input.siteId}/restrictions`
       );
-      
+
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              siteId: input.siteId,
               restrictions: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3702,7 +3511,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to get site restrictions',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3735,10 +3544,8 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              message: 'Site restrictions updated successfully',
-              siteId: input.siteId,
               restrictions: response,
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -3751,7 +3558,7 @@ export class DocsToolHandler extends Injectable {
               error: 'Failed to update site restrictions',
               message: error instanceof Error ? error.message : String(error),
               siteId: input.siteId,
-            }, null, 2),
+            }),
           },
         ],
       };

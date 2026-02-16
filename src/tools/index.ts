@@ -1,10 +1,12 @@
 import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { PaginatedResponse, helpScoutClient } from '../utils/helpscout-client.js';
-import { createMcpToolError } from '../utils/mcp-errors.js';
+import { createMcpToolError, isApiError } from '../utils/mcp-errors.js';
 import { HelpScoutAPIConstraints, ToolCallContext } from '../utils/api-constraints.js';
-import { Injectable, ServiceContainer } from '../utils/service-container.js';
+import { ServiceContainer } from '../utils/service-container.js';
 import { DocsToolHandler } from './docs-tools.js';
 import { ReportsToolHandler } from './reports-tools.js';
+import { logger } from '../utils/logger.js';
+import { config, isVerbose } from '../utils/config.js';
 import { z } from 'zod';
 
 /**
@@ -53,9 +55,29 @@ import {
   SearchConversationsInputSchema,
   GetThreadsInputSchema,
   GetConversationSummaryInputSchema,
-  AdvancedConversationSearchInputSchema,
-  MultiStatusConversationSearchInputSchema,
+  StructuredConversationFilterInputSchema,
 } from '../schema/types.js';
+
+/**
+ * Add the `verbose` property to a tool's inputSchema.
+ */
+function addVerboseParam(tool: Tool): Tool {
+  const schema = tool.inputSchema as any;
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      properties: {
+        ...schema.properties,
+        verbose: {
+          type: 'boolean',
+          description: 'Return full API response objects instead of slim summaries. Default: false (slim).',
+          default: false,
+        },
+      },
+    },
+  };
+}
 
 export class ToolHandler {
   private callHistory: string[] = [];
@@ -64,11 +86,194 @@ export class ToolHandler {
   private reportsToolHandler: ReportsToolHandler;
 
   constructor(container?: ServiceContainer) {
-    super(container);
     // Initialize DocsToolHandler with the same container
     this.docsToolHandler = new DocsToolHandler(container);
     // Initialize ReportsToolHandler with the same container
     this.reportsToolHandler = new ReportsToolHandler(container);
+  }
+
+  /**
+   * Strip a raw Help Scout conversation object down to the fields that matter.
+   * The API returns huge objects with _links, _embedded, tag styles, photo URLs,
+   * closedByUser, source metadata, etc. — none of which the LLM needs.
+   */
+  private slimConversation(conv: Conversation): Record<string, unknown> {
+    return {
+      id: conv.id,
+      number: (conv as any).number,
+      subject: (conv as any).subject,
+      status: (conv as any).status,
+      preview: (conv as any).preview,
+      mailboxId: (conv as any).mailboxId,
+      assignee: (conv as any).assignee ? {
+        id: (conv as any).assignee.id,
+        first: (conv as any).assignee.first || (conv as any).assignee.firstName,
+        last: (conv as any).assignee.last || (conv as any).assignee.lastName,
+        email: (conv as any).assignee.email,
+      } : null,
+      customer: (conv as any).createdBy?.type === 'customer' ? {
+        id: (conv as any).createdBy.id,
+        first: (conv as any).createdBy.first || (conv as any).createdBy.firstName,
+        last: (conv as any).createdBy.last || (conv as any).createdBy.lastName,
+        email: (conv as any).createdBy.email,
+      } : (conv as any).customer ? {
+        id: (conv as any).customer.id,
+        first: (conv as any).customer.first || (conv as any).customer.firstName,
+        last: (conv as any).customer.last || (conv as any).customer.lastName,
+        email: (conv as any).customer.email,
+      } : null,
+      tags: ((conv as any).tags || []).map((t: any) => t.tag || t.name || t),
+      createdAt: (conv as any).createdAt,
+      closedAt: (conv as any).closedAt,
+      waitingSince: (conv as any).customerWaitingSince?.friendly,
+    };
+  }
+
+  /**
+   * Fetch multiple pages from the Help Scout conversations API until we reach
+   * the desired count or run out of pages. Help Scout ignores the `size` param
+   * and always returns ~25 conversations per page, so we must paginate to get
+   * more than 25 results.
+   */
+  private async fetchConversationPages(
+    params: Record<string, unknown>,
+    desiredCount: number,
+    maxPages?: number
+  ): Promise<{ conversations: Conversation[]; totalElements: number }> {
+    const conversations: Conversation[] = [];
+    let totalElements = 0;
+    let currentPage = 1;
+    let hasMore = true;
+
+    const effectiveMaxPages = maxPages || Math.ceil(desiredCount / 25) + 1;
+
+    while (conversations.length < desiredCount && hasMore && currentPage <= effectiveMaxPages) {
+      const response = await helpScoutClient.get<PaginatedResponse<Conversation>>(
+        '/conversations',
+        { ...params, page: currentPage }
+      );
+
+      const pageConversations = response._embedded?.conversations || [];
+      conversations.push(...pageConversations);
+      totalElements = response.page?.totalElements || totalElements;
+      hasMore = !!response._links?.next;
+      currentPage++;
+    }
+
+    return { conversations, totalElements };
+  }
+
+  /**
+   * Fetch multiple pages of threads from a conversation until we reach
+   * the desired count or run out of pages.
+   */
+  private async fetchThreadPages(
+    conversationId: string,
+    desiredCount: number
+  ): Promise<{ threads: Thread[]; totalElements: number }> {
+    const threads: Thread[] = [];
+    let totalElements = 0;
+    let currentPage = 1;
+    let hasMore = true;
+    const maxPages = Math.ceil(desiredCount / 25) + 1;
+
+    while (threads.length < desiredCount && hasMore && currentPage <= maxPages) {
+      const response = await helpScoutClient.get<PaginatedResponse<Thread>>(
+        `/conversations/${conversationId}/threads`,
+        { page: currentPage, size: desiredCount }
+      );
+
+      const pageThreads = response._embedded?.threads || [];
+      threads.push(...pageThreads);
+      totalElements = response.page?.totalElements || totalElements;
+      hasMore = !!response._links?.next;
+      currentPage++;
+    }
+
+    return { threads, totalElements };
+  }
+
+  /**
+   * Escape special characters in Help Scout query syntax to prevent injection
+   */
+  private escapeQueryTerm(term: string): string {
+    return term.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  }
+
+  /**
+   * Append a createdAt date range to an existing Help Scout query string.
+   * Help Scout has no native createdAfter/createdBefore URL params, so we
+   * use query syntax: (createdAt:[start TO end]).
+   */
+  private appendCreatedAtFilter(
+    existingQuery: string | undefined,
+    createdAfter?: string,
+    createdBefore?: string
+  ): string | undefined {
+    if (!createdAfter && !createdBefore) return existingQuery;
+
+    // Validate date format to prevent query injection
+    const isoDatePattern = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;
+    if (createdAfter && !isoDatePattern.test(createdAfter)) {
+      throw new Error(`Invalid createdAfter date format: ${createdAfter}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+    }
+    if (createdBefore && !isoDatePattern.test(createdBefore)) {
+      throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+    }
+
+    // Strip milliseconds (Help Scout rejects .xxx format)
+    const normalize = (d: string) => d.replace(/\.\d{3}Z$/, 'Z');
+    const start = createdAfter ? normalize(createdAfter) : '*';
+    const end = createdBefore ? normalize(createdBefore) : '*';
+    const clause = `(createdAt:[${start} TO ${end}])`;
+
+    if (!existingQuery) return clause;
+    return `(${existingQuery}) AND ${clause}`;
+  }
+
+  /**
+   * Apply client-side createdBefore filter (Help Scout API does not support this natively).
+   */
+  private applyCreatedBeforeFilter(
+    conversations: Conversation[],
+    createdBefore: string,
+    context: string
+  ): { filtered: Conversation[]; wasFiltered: boolean; removedCount: number } {
+    const beforeDate = new Date(createdBefore);
+    if (isNaN(beforeDate.getTime())) {
+      throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 format (e.g., 2023-01-15T00:00:00Z)`);
+    }
+
+    const originalCount = conversations.length;
+    const filtered = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
+    const removedCount = originalCount - filtered.length;
+
+    if (removedCount > 0) {
+      logger.warn(`Client-side createdBefore filter applied - ${context}`, {
+        originalCount,
+        filteredCount: filtered.length,
+        removedCount,
+        note: 'Help Scout API does not support createdBefore parameter natively'
+      });
+    }
+
+    return { filtered, wasFiltered: removedCount > 0, removedCount };
+  }
+
+  /**
+   * Build pagination info that distinguishes filtered count from API total.
+   */
+  private buildFilteredPagination(
+    filteredCount: number,
+    apiPage: { totalElements?: number } | undefined,
+    wasFiltered: boolean
+  ): unknown {
+    if (!wasFiltered) return apiPage;
+    return {
+      totalResults: filteredCount,
+      totalAvailable: apiPage?.totalElements,
+      note: `Results filtered client-side by createdBefore. totalResults shows filtered count (${filteredCount}), totalAvailable shows pre-filter API total (${apiPage?.totalElements}).`
+    };
   }
 
   /**
@@ -79,12 +284,12 @@ export class ToolHandler {
   }
 
   async listTools(): Promise<Tool[]> {
-    const conversationTools = [
+    const conversationTools: Tool[] = [
       {
         name: 'searchInboxes',
-        description: 'STEP 1: Always use this FIRST when searching conversations. Lists all available inboxes or filters by name. CRITICAL: When a user mentions an inbox by name (e.g., "support inbox", "sales mailbox"), you MUST call this tool first to get the inbox ID before searching conversations.',
+        description: 'List or search inboxes by name. Deprecated: inbox IDs now in server instructions. Only needed to refresh list mid-session.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
             query: {
               type: 'string',
@@ -107,17 +312,18 @@ export class ToolHandler {
       },
       {
         name: 'searchConversations',
-        description: 'STEP 2: Search conversations after obtaining inbox ID. WARNING: Always get inboxId from searchInboxes first if user mentions an inbox name. IMPORTANT: Specify status (active/pending/closed/spam) for better results, or use comprehensiveConversationSearch for multi-status searching. NOTE: Can be used WITHOUT query parameter to list ALL conversations matching other filters (ideal for "show recent tickets" requests).',
+        description: 'Search conversations by keywords, structured filters, or list by status/date/inbox. Searches ALL statuses (active, pending, closed) by default — do NOT filter statuses unless the user explicitly asks for a specific status.\n\n- For keyword search: provide searchTerms (searches across all statuses)\n- For structured filters: provide contentTerms, subjectTerms, customerEmail, emailDomain, or tags\n- For listing/browsing: use inboxId, tag, createdAfter/createdBefore\n- Set includeTranscripts:true to fetch message transcripts inline (great for summarization). Defaults to 10 conversations when enabled.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
+            // --- Simple search / listing ---
             query: {
               type: 'string',
-              description: 'OPTIONAL: HelpScout query syntax for content search. OMIT this parameter to list ALL conversations. Examples: (body:"keyword"), (subject:"text"), (email:"user@domain.com"), (tag:"tagname"), (customerIds:123), complex: (body:"urgent" OR subject:"support"). Use cases: OMIT for "show recent tickets", INCLUDE for "find tickets about billing".',
+              description: 'Raw HelpScout query syntax. Omit to list all. Example: (body:"keyword")',
             },
             inboxId: {
               type: 'string',
-              description: 'Filter by inbox ID. REQUIRED when user mentions a specific inbox. Get this ID by calling searchInboxes first!',
+              description: 'Inbox ID from server instructions',
             },
             tag: {
               type: 'string',
@@ -126,7 +332,12 @@ export class ToolHandler {
             status: {
               type: 'string',
               enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM],
-              description: 'Filter by conversation status. CRITICAL: HelpScout often returns no results without this parameter. For comprehensive search across all statuses, use comprehensiveConversationSearch instead.',
+              description: 'Filter by single status. Omit to search ALL statuses (active+pending+closed). Only set this if the user explicitly requests a specific status.',
+            },
+            statuses: {
+              type: 'array',
+              items: { type: 'string', enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM] },
+              description: 'Filter by multiple statuses. Omit to search ALL statuses. Only use if the user explicitly requests specific statuses.',
             },
             createdAfter: {
               type: 'string',
@@ -140,9 +351,8 @@ export class ToolHandler {
             },
             limit: {
               type: 'number',
-              description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+              description: 'Maximum number of results. Auto-paginates to fetch all.',
               minimum: 1,
-              maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
               default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
             },
             cursor: {
@@ -151,7 +361,7 @@ export class ToolHandler {
             },
             sort: {
               type: 'string',
-              enum: ['createdAt', 'updatedAt', 'number'],
+              enum: ['createdAt', 'modifiedAt', 'number'],
               default: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
               description: 'Sort field',
             },
@@ -161,10 +371,61 @@ export class ToolHandler {
               default: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
               description: 'Sort order',
             },
-            fields: {
+            // --- Keyword search (multi-status parallel) ---
+            searchTerms: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Specific fields to return (for partial responses)',
+              description: 'Keywords to search for (OR logic across all statuses). Example: ["billing", "refund"]',
+            },
+            searchIn: {
+              type: 'array',
+              items: { enum: ['body', 'subject', 'both'] },
+              description: 'Where to search for terms (defaults to both body and subject)',
+              default: ['both'],
+            },
+            timeframeDays: {
+              type: 'number',
+              description: `Number of days back to search (defaults to ${TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS}, used with searchTerms)`,
+              minimum: 1,
+              maximum: 365,
+              default: TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS,
+            },
+            // --- Structured search (field-specific queries) ---
+            contentTerms: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Search terms to find in conversation body/content (OR combined)',
+            },
+            subjectTerms: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Search terms to find in conversation subject (OR combined)',
+            },
+            customerEmail: {
+              type: 'string',
+              description: 'Exact customer email to search for',
+            },
+            emailDomain: {
+              type: 'string',
+              description: 'Email domain to search for (e.g., "company.com")',
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Tag names to filter by (OR combined)',
+            },
+            // --- Transcript inclusion ---
+            includeTranscripts: {
+              type: 'boolean',
+              default: false,
+              description: 'When true, fetches message transcripts for each conversation (customer/staff dialogue, HTML stripped). Limit defaults to 10 when enabled. Higher limits with transcripts may be slow.',
+            },
+            transcriptMaxMessages: {
+              type: 'number',
+              default: 10,
+              minimum: 1,
+              maximum: 50,
+              description: 'Max messages per conversation transcript (default 10). Only used when includeTranscripts is true.',
             },
           },
         },
@@ -173,7 +434,7 @@ export class ToolHandler {
         name: 'getConversationSummary',
         description: 'Get conversation summary with first customer message and latest staff reply',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
             conversationId: {
               type: 'string',
@@ -185,13 +446,19 @@ export class ToolHandler {
       },
       {
         name: 'getThreads',
-        description: 'Get all thread messages for a conversation',
+        description: 'Retrieve message history for a conversation. Use format:"transcript" for a minimal customer/staff dialogue optimized for AI analysis.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
             conversationId: {
               type: 'string',
               description: 'The conversation ID to get threads for',
+            },
+            format: {
+              type: 'string',
+              enum: ['full', 'transcript'],
+              default: 'full',
+              description: 'Output format. "full" returns all threads with metadata. "transcript" returns only customer/staff messages as a minimal dialogue (strips notes, lineitems, HTML).',
             },
             limit: {
               type: 'number',
@@ -210,17 +477,17 @@ export class ToolHandler {
       },
       {
         name: 'getServerTime',
-        description: 'Get current server time for time-relative searches',
+        description: 'Get current server timestamp. Use before date-relative searches to calculate time ranges.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {},
         },
       },
       {
         name: 'listAllInboxes',
-        description: 'QUICK HELPER: Lists ALL available inboxes with their IDs. This is equivalent to searchInboxes with empty query but more explicit. Use this when you need to see all inboxes or when starting any inbox-specific search.',
+        description: 'List all inboxes with IDs. Deprecated: inbox IDs now in server instructions. Only needed mid-session.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
             limit: {
               type: 'number',
@@ -233,141 +500,43 @@ export class ToolHandler {
         },
       },
       {
-        name: 'advancedConversationSearch',
-        description: 'Advanced conversation search with complex boolean queries and customer organization support',
+        name: 'structuredConversationFilter',
+        description: 'Lookup conversation by ticket number or filter by assignee/customer/folder IDs. Use after discovering IDs from other searches. For initial searches, use searchConversations.',
         inputSchema: {
-          type: 'object' as const,
+          type: 'object',
           properties: {
-            contentTerms: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Search terms to find in conversation body/content (will be OR combined)',
-            },
-            subjectTerms: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Search terms to find in conversation subject (will be OR combined)',
-            },
-            customerEmail: {
-              type: 'string',
-              description: 'Exact customer email to search for',
-            },
-            emailDomain: {
-              type: 'string',
-              description: 'Email domain to search for (e.g., "company.com" to find all @company.com emails)',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Tag names to search for (will be OR combined)',
-            },
-            inboxId: {
-              type: 'string',
-              description: 'Filter by inbox ID',
-            },
-            status: {
-              type: 'string',
-              enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM],
-              description: 'Filter by conversation status',
-            },
-            createdAfter: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Filter conversations created after this timestamp (ISO8601)',
-            },
-            createdBefore: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Filter conversations created before this timestamp (ISO8601)',
-            },
-            limit: {
-              type: 'number',
-              description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
-              minimum: 1,
-              maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
-              default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
-            },
+            assignedTo: { type: 'number', description: 'User ID from previous_results[].assignee.id. Use -1 for unassigned.' },
+            folderId: { type: 'number', description: 'Folder ID from Help Scout UI (not in API responses)' },
+            customerIds: { type: 'array', items: { type: 'number' }, description: 'Customer IDs from previous_results[].customer.id' },
+            conversationNumber: { type: 'number', description: 'Ticket number from previous_results[].number or user reference' },
+            status: { type: 'string', enum: ['active', 'pending', 'closed', 'spam', 'all'], default: 'all' },
+            inboxId: { type: 'string', description: 'Inbox ID to combine with filters' },
+            tag: { type: 'string', description: 'Tag name to combine with filters' },
+            createdAfter: { type: 'string', format: 'date-time' },
+            createdBefore: { type: 'string', format: 'date-time' },
+            modifiedSince: { type: 'string', format: 'date-time', description: 'Filter by last modified (different from created)' },
+            sortBy: { type: 'string', enum: ['createdAt', 'modifiedAt', 'number', 'waitingSince', 'customerName', 'customerEmail', 'mailboxId', 'status', 'subject'], default: 'createdAt', description: 'waitingSince/customerName/customerEmail are unique to this tool' },
+            sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+            limit: { type: 'number', minimum: 1, default: 50 },
+            cursor: { type: 'string' },
           },
-        },
-      },
-      {
-        name: 'comprehensiveConversationSearch',
-        description: 'CONTENT-BASED SEARCH ONLY: Requires actual search terms to find specific conversations by content. NOT for listing all recent conversations. Use searchConversations (without query) for listing. Searches across multiple statuses simultaneously. WORKFLOW: 1) If user mentions an inbox name, call searchInboxes FIRST to get the ID. 2) Then use this tool with actual search terms.',
-        inputSchema: {
-          type: 'object' as const,
-          properties: {
-            searchTerms: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'REQUIRED: Actual search terms to find in conversations (will be combined with OR logic). Examples: ["billing", "refund"], ["urgent"], ["login issue"]. DO NOT use empty strings.',
-              minItems: 1,
-            },
-            inboxId: {
-              type: 'string',
-              description: 'Filter by specific inbox ID. IMPORTANT: If user mentions an inbox by name, you MUST call searchInboxes first to get this ID!',
-            },
-            statuses: {
-              type: 'array',
-              items: { enum: ['active', 'pending', 'closed', 'spam'] },
-              description: 'Conversation statuses to search (defaults to active, pending, closed)',
-              default: ['active', 'pending', 'closed'],
-            },
-            searchIn: {
-              type: 'array',
-              items: { enum: ['body', 'subject', 'both'] },
-              description: 'Where to search for terms (defaults to both body and subject)',
-              default: ['both'],
-            },
-            timeframeDays: {
-              type: 'number',
-              description: `Number of days back to search (defaults to ${TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS})`,
-              minimum: 1,
-              maximum: 365,
-              default: TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS,
-            },
-            createdAfter: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Override timeframeDays with specific start date (ISO8601)',
-            },
-            createdBefore: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for search range (ISO8601)',
-            },
-            limitPerStatus: {
-              type: 'number',
-              description: `Maximum results per status (defaults to ${TOOL_CONSTANTS.DEFAULT_LIMIT_PER_STATUS})`,
-              minimum: 1,
-              maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
-              default: TOOL_CONSTANTS.DEFAULT_LIMIT_PER_STATUS,
-            },
-            includeVariations: {
-              type: 'boolean',
-              description: 'Include common variations of search terms',
-              default: true,
-            },
-          },
-          required: ['searchTerms'],
         },
       },
     ];
 
-    // Get Docs tools from the Docs handler
-    const docsTools = await this.docsToolHandler.listDocsTools();
+    // Get Docs tools from the Docs handler (unless disabled via HELPSCOUT_DISABLE_DOCS=true)
+    const docsTools = config.helpscout.disableDocs ? [] : await this.docsToolHandler.listDocsTools();
 
     // Get Reports tools from the Reports handler
     const reportsTools = await this.reportsToolHandler.listReportsTools();
 
-    // Combine conversation tools, docs tools, and reports tools
-    return [...conversationTools, ...docsTools, ...reportsTools];
+    // Combine all tools and add `verbose` parameter to each
+    return [...conversationTools, ...docsTools, ...reportsTools].map(addVerboseParam);
   }
 
   async callTool(request: CallToolRequest): Promise<CallToolResult> {
     const requestId = Math.random().toString(36).substring(7);
     const startTime = Date.now();
-
-    // Using direct import
 
     logger.info('Tool call started', {
       requestId,
@@ -410,7 +579,7 @@ export class ToolHandler {
               requiredActions: validation.requiredPrerequisites || [],
               suggestions: validation.suggestions
             }
-          }, null, 2)
+          })
         }]
       };
     }
@@ -418,9 +587,9 @@ export class ToolHandler {
     try {
       let result: CallToolResult;
 
-      // Check if this is a Docs tool
-      const docsTools = await this.docsToolHandler.listDocsTools();
-      const isDocsTool = docsTools.some(tool => tool.name === request.params.name);
+      // Check if this is a Docs tool (unless disabled)
+      const isDocsTool = !config.helpscout.disableDocs &&
+        (await this.docsToolHandler.listDocsTools()).some(tool => tool.name === request.params.name);
 
       // Check if this is a Reports tool
       const reportsTools = await this.reportsToolHandler.listReportsTools();
@@ -453,11 +622,8 @@ export class ToolHandler {
           case 'listAllInboxes':
             result = await this.listAllInboxes(request.params.arguments || {});
             break;
-          case 'advancedConversationSearch':
-            result = await this.advancedConversationSearch(request.params.arguments || {});
-            break;
-          case 'comprehensiveConversationSearch':
-            result = await this.comprehensiveConversationSearch(request.params.arguments || {});
+          case 'structuredConversationFilter':
+            result = await this.structuredConversationFilter(request.params.arguments || {});
             break;
           default:
             throw new Error(`Unknown tool: ${request.params.name}`);
@@ -480,7 +646,7 @@ export class ToolHandler {
         originalContent.apiGuidance = guidance;
         result.content[0] = {
           type: 'text',
-          text: JSON.stringify(originalContent, null, 2)
+          text: JSON.stringify(originalContent)
         };
       }
 
@@ -506,8 +672,6 @@ export class ToolHandler {
 
   private async searchInboxes(args: unknown): Promise<CallToolResult> {
     const input = SearchInboxesInputSchema.parse(args);
-    // Using direct import
-
     const response = await helpScoutClient.get<PaginatedResponse<Inbox>>('/mailboxes', {
       page: 1,
       size: input.limit,
@@ -519,129 +683,443 @@ export class ToolHandler {
     );
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            results: filteredInboxes.map(inbox => ({
-              id: inbox.id,
-              name: inbox.name,
-              email: inbox.email,
-              createdAt: inbox.createdAt,
-              updatedAt: inbox.updatedAt,
-            })),
-            query: input.query,
-            totalFound: filteredInboxes.length,
-            totalAvailable: inboxes.length,
-            usage: filteredInboxes.length > 0 ?
-              'NEXT STEP: Use the "id" field from these results in your conversation search tools (comprehensiveConversationSearch or searchConversations)' :
-              'No inboxes matched your query. Try a different search term or use empty string "" to list all inboxes.',
-            example: filteredInboxes.length > 0 ?
-              `comprehensiveConversationSearch({ searchTerms: ["your search"], inboxId: "${filteredInboxes[0].id}" })` :
-              null,
-          }, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          results: isVerbose(args) ? filteredInboxes : filteredInboxes.map(inbox => ({
+            id: inbox.id,
+            name: inbox.name,
+            email: inbox.email,
+          })),
+          totalFound: filteredInboxes.length,
+        }),
+      }],
     };
   }
 
   private async searchConversations(args: unknown): Promise<CallToolResult> {
     const input = SearchConversationsInputSchema.parse(args);
-    // Using direct imports
+    const verbose = isVerbose(args);
+
+    // When transcripts are requested and no explicit limit was set, default to 10
+    if (input.includeTranscripts && !(args as any)?.limit) {
+      input.limit = 10;
+    }
+
+    // --- Route to the appropriate search strategy ---
+    let result: CallToolResult;
+
+    // 1. Keyword search mode: searchTerms provided → multi-status parallel search
+    if (input.searchTerms && input.searchTerms.length > 0) {
+      result = await this.searchConversationsKeyword(input, verbose);
+    }
+    // 2. Structured search mode: contentTerms/subjectTerms/customerEmail/emailDomain/tags
+    else if (input.contentTerms?.length || input.subjectTerms?.length || input.customerEmail || input.emailDomain || input.tags?.length) {
+      result = await this.searchConversationsStructured(input, verbose);
+    }
+    // 3. Simple/list mode: filter by status, date, inbox, tag
+    else {
+      result = await this.searchConversationsList(input, verbose);
+    }
+
+    // --- Attach transcripts if requested ---
+    if (input.includeTranscripts) {
+      result = await this.enrichWithTranscripts(result, input.transcriptMaxMessages);
+    }
+
+    return result;
+  }
+
+  /**
+   * Keyword search: multi-status parallel search across active/pending/closed
+   */
+  private async searchConversationsKeyword(
+    input: z.infer<typeof SearchConversationsInputSchema>,
+    verbose: boolean
+  ): Promise<CallToolResult> {
+    const createdAfter = input.createdAfter || this.calculateTimeRange(input.timeframeDays);
+    const searchQuery = this.buildSearchQuery(input.searchTerms!, input.searchIn);
+    const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+    const statuses = input.statuses?.length ? input.statuses : (['active', 'pending', 'closed'] as const);
+    const limitPerStatus = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
+
+    const allResults: Array<{
+      status: string;
+      totalCount: number;
+      conversations: Record<string, unknown>[];
+    }> = [];
+
+    const settled = await Promise.allSettled(
+      statuses.map(status =>
+        this.searchSingleStatus({
+          status,
+          searchQuery,
+          createdAfter,
+          limitPerStatus,
+          inboxId: effectiveInboxId,
+          createdBefore: input.createdBefore,
+          verbose,
+        })
+      )
+    );
+
+    for (const [index, result] of settled.entries()) {
+      const status = statuses[index];
+      if (result.status === 'fulfilled') {
+        allResults.push(result.value);
+      } else {
+        const error = result.reason;
+        if (!isApiError(error)) throw error;
+        if (error.code === 'UNAUTHORIZED' || error.code === 'INVALID_INPUT') throw error;
+
+        logger.error('Status search failed - partial results will be returned', {
+          status, errorCode: error.code, message: error.message,
+        });
+        allResults.push({ status, totalCount: 0, conversations: [] });
+      }
+    }
+
+    const totalConversations = allResults.reduce((sum, r) => sum + r.conversations.length, 0);
+    const totalAvailable = allResults.reduce((sum, r) => sum + r.totalCount, 0);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          query: searchQuery,
+          totalConversationsFound: totalConversations,
+          totalAvailable,
+          resultsByStatus: allResults.map(r => ({
+            status: r.status,
+            count: r.conversations.length,
+            totalAvailable: r.totalCount,
+            conversations: r.conversations,
+          })),
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Structured search: builds Help Scout query syntax with field prefixes
+   */
+  private async searchConversationsStructured(
+    input: z.infer<typeof SearchConversationsInputSchema>,
+    verbose: boolean
+  ): Promise<CallToolResult> {
+    const queryParts: string[] = [];
+
+    if (input.contentTerms && input.contentTerms.length > 0) {
+      const bodyQueries = input.contentTerms.map(term => `body:"${this.escapeQueryTerm(term)}"`);
+      queryParts.push(`(${bodyQueries.join(' OR ')})`);
+    }
+
+    if (input.subjectTerms && input.subjectTerms.length > 0) {
+      const subjectQueries = input.subjectTerms.map(term => `subject:"${this.escapeQueryTerm(term)}"`);
+      queryParts.push(`(${subjectQueries.join(' OR ')})`);
+    }
+
+    if (input.customerEmail) {
+      queryParts.push(`email:"${this.escapeQueryTerm(input.customerEmail)}"`);
+    }
+
+    if (input.emailDomain) {
+      const domain = input.emailDomain.replace('@', '');
+      queryParts.push(`email:"${this.escapeQueryTerm(domain)}"`);
+    }
+
+    if (input.tags && input.tags.length > 0) {
+      const tagQueries = input.tags.map(tag => `tag:"${this.escapeQueryTerm(tag)}"`);
+      queryParts.push(`(${tagQueries.join(' OR ')})`);
+    }
+
+    const queryString = queryParts.length > 0 ? queryParts.join(' AND ') : undefined;
+
+    const effectiveLimit = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
 
     const queryParams: Record<string, unknown> = {
+      size: effectiveLimit,
+      sortField: 'createdAt',
+      sortOrder: 'desc',
+    };
+
+    if (queryString) queryParams.query = queryString;
+
+    const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+    if (effectiveInboxId) queryParams.mailbox = effectiveInboxId;
+
+    const queryWithDate = this.appendCreatedAtFilter(
+      queryParams.query as string | undefined,
+      input.createdAfter
+    );
+    if (queryWithDate) queryParams.query = queryWithDate;
+
+    // Multi-status parallel search if statuses array provided
+    const statuses = input.statuses && input.statuses.length > 0
+      ? input.statuses
+      : null;
+
+    let conversations: Conversation[] = [];
+    let clientSideFiltered = false;
+
+    if (statuses) {
+      const results = await Promise.allSettled(
+        statuses.map(status =>
+          this.fetchConversationPages(
+            { ...queryParams, status },
+            effectiveLimit
+          )
+        )
+      );
+
+      const seenIds = new Set<number>();
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          for (const conv of result.value.conversations) {
+            if (!seenIds.has(conv.id)) {
+              seenIds.add(conv.id);
+              conversations.push(conv);
+            }
+          }
+        }
+      }
+
+      conversations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } else {
+      queryParams.status = input.status || 'all';
+      const { conversations: fetched } = await this.fetchConversationPages(
+        queryParams, effectiveLimit
+      );
+      conversations = fetched;
+    }
+
+    if (input.createdBefore) {
+      const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'searchConversations(structured)');
+      conversations = result.filtered;
+      clientSideFiltered = result.wasFiltered;
+    }
+
+    if (conversations.length > effectiveLimit) {
+      conversations = conversations.slice(0, effectiveLimit);
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          results: verbose ? conversations : conversations.map(c => this.slimConversation(c)),
+          query: queryString,
+          pagination: { returned: conversations.length },
+          ...(statuses ? { statuses } : {}),
+          ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Simple/list search: filter by status, date, inbox, tag
+   */
+  private async searchConversationsList(
+    input: z.infer<typeof SearchConversationsInputSchema>,
+    verbose: boolean
+  ): Promise<CallToolResult> {
+    const baseParams: Record<string, unknown> = {
       page: 1,
       size: input.limit,
       sortField: input.sort,
       sortOrder: input.order,
     };
 
-    // Add HelpScout query parameter for content/body search
-    if (input.query) {
-      queryParams.query = input.query;
-    }
+    if (input.query) baseParams.query = input.query;
 
-    if (input.inboxId) queryParams.mailbox = input.inboxId;
-    if (input.tag) queryParams.tag = input.tag;
-    if (input.createdAfter) queryParams.modifiedSince = input.createdAfter;
+    const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+    if (effectiveInboxId) baseParams.mailbox = effectiveInboxId;
+    if (input.tag) baseParams.tag = input.tag;
 
-    // Handle status parameter with helpful guidance
-    if (input.status) {
-      queryParams.status = input.status;
-    } else if (input.query || input.tag) {
-      // If search criteria are provided but no status, default to 'active' with a warning
-      queryParams.status = 'active';
-      logger.warn('No status specified for conversation search, defaulting to "active". For comprehensive results across all statuses, use comprehensiveConversationSearch tool.', {
-        query: input.query,
-        tag: input.tag,
-      });
-    }
+    const queryWithDate = this.appendCreatedAtFilter(
+      baseParams.query as string | undefined,
+      input.createdAfter
+    );
+    if (queryWithDate) baseParams.query = queryWithDate;
 
-    const response = await helpScoutClient.get<PaginatedResponse<Conversation>>('/conversations', queryParams);
+    let conversations: Conversation[] = [];
+    let searchedStatuses: string[];
+    let pagination: unknown = null;
 
-    let conversations = response._embedded?.conversations || [];
+    const effectiveLimit = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
 
-    // Apply additional filtering
-    if (input.createdBefore) {
-      const beforeDate = new Date(input.createdBefore);
-      conversations = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
-    }
+    if (input.status && !input.statuses) {
+      // Single status — auto-paginate
+      const { conversations: fetched, totalElements } = await this.fetchConversationPages(
+        { ...baseParams, status: input.status },
+        effectiveLimit
+      );
+      conversations = fetched.slice(0, effectiveLimit);
+      searchedStatuses = [input.status];
+      pagination = { returned: conversations.length, totalAvailable: totalElements };
+    } else {
+      // Multi-status — auto-paginate each status in parallel
+      const statuses = input.statuses?.length ? input.statuses : (['active', 'pending', 'closed'] as const);
+      searchedStatuses = [...statuses];
 
-    // Apply field selection if specified
-    if (input.fields && input.fields.length > 0) {
-      conversations = conversations.map(conv => {
-        const filtered: Partial<Conversation> = {};
-        input.fields!.forEach(field => {
-          if (field in conv) {
-            (filtered as any)[field] = (conv as any)[field];
+      const results = await Promise.allSettled(
+        statuses.map(status =>
+          this.fetchConversationPages(
+            { ...baseParams, status },
+            effectiveLimit
+          )
+        )
+      );
+
+      const seenIds = new Set<number>();
+      const failedStatuses: Array<{ status: string; message: string; code: string }> = [];
+      let totalAvailable = 0;
+
+      for (const [index, result] of results.entries()) {
+        if (result.status === 'fulfilled') {
+          totalAvailable += result.value.totalElements;
+
+          for (const conv of result.value.conversations) {
+            if (!seenIds.has(conv.id)) {
+              seenIds.add(conv.id);
+              conversations.push(conv);
+            }
           }
-        });
-        return filtered as Conversation;
-      });
+        } else {
+          const failedStatus = statuses[index];
+          const reason = result.reason;
+          const errorMessage = isApiError(reason)
+            ? reason.message
+            : (reason instanceof Error ? reason.message : String(reason));
+          const errorCode = isApiError(reason) ? reason.code : 'UNKNOWN';
+
+          if (!isApiError(reason)) throw reason;
+          if (errorCode === 'UNAUTHORIZED' || errorCode === 'INVALID_INPUT') throw reason;
+
+          failedStatuses.push({ status: failedStatus, message: errorMessage, code: errorCode });
+          logger.error('Status search failed - partial results will be returned', {
+            status: failedStatus, errorCode, message: errorMessage,
+          });
+        }
+      }
+
+      if (failedStatuses.length > 0) {
+        searchedStatuses = statuses.filter(s => !failedStatuses.some(f => f.status === s));
+      }
+
+      conversations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      if (conversations.length > effectiveLimit) {
+        conversations = conversations.slice(0, effectiveLimit);
+      }
+
+      pagination = {
+        returned: conversations.length,
+        totalAvailable,
+        ...(failedStatuses.length > 0 ? { errors: failedStatuses } : {}),
+      };
     }
 
-    const results = {
-      results: conversations,
-      pagination: response.page,
-      nextCursor: response._links?.next?.href,
-      searchInfo: {
-        query: input.query,
-        status: queryParams.status || 'all',
-        appliedDefaults: !input.status && (input.query || input.tag) ? ['status: active'] : undefined,
-        searchGuidance: conversations.length === 0 ? [
-          'If no results found, try:',
-          '1. Use comprehensiveConversationSearch for multi-status search',
-          '2. Try different status values: active, pending, closed, spam',
-          '3. Broaden search terms or extend time range',
-          '4. Check if inbox ID is correct'
-        ] : undefined,
-      },
-    };
+    // Apply client-side createdBefore filtering
+    let clientSideFiltered = false;
+    const originalPagination = pagination;
+
+    if (input.createdBefore) {
+      const filterResult = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'searchConversations');
+      conversations = filterResult.filtered;
+      clientSideFiltered = filterResult.wasFiltered;
+
+      if (clientSideFiltered) {
+        if (input.status) {
+          pagination = this.buildFilteredPagination(
+            conversations.length,
+            originalPagination as { totalElements?: number } | undefined,
+            true
+          );
+        } else {
+          const merged = originalPagination as {
+            totalAvailable?: number;
+            errors?: Array<{ status: string; message: string; code: string }>;
+            note?: string;
+          } | null;
+          pagination = {
+            totalResults: conversations.length,
+            totalAvailable: merged?.totalAvailable,
+            errors: merged?.errors,
+            note: `Client-side createdBefore filter applied to merged results. ${merged?.note || ''}`
+          };
+        }
+      }
+    }
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(results, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          results: verbose ? conversations : conversations.map(c => this.slimConversation(c)),
+          pagination,
+          ...(input.query ? { query: input.query } : {}),
+          statuses: searchedStatuses,
+          ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Post-process a searchConversations result to attach transcripts.
+   * Works with all three search paths (keyword, structured, list).
+   */
+  private async enrichWithTranscripts(
+    result: CallToolResult,
+    maxMessages: number
+  ): Promise<CallToolResult> {
+    const data = JSON.parse((result.content[0] as any).text);
+
+    // Keyword path uses resultsByStatus[].conversations, others use results[]
+    if (data.resultsByStatus) {
+      for (const statusGroup of data.resultsByStatus) {
+        statusGroup.conversations = await this.attachTranscripts(
+          statusGroup.conversations,
+          maxMessages
+        );
+      }
+    } else if (data.results) {
+      data.results = await this.attachTranscripts(data.results, maxMessages);
+    }
+
+    data.includeTranscripts = true;
+    data.transcriptMaxMessages = maxMessages;
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(data),
+      }],
     };
   }
 
   private async getConversationSummary(args: unknown): Promise<CallToolResult> {
     const input = GetConversationSummaryInputSchema.parse(args);
-    // Using direct imports
+    const verbose = isVerbose(args);
 
     // Get conversation details
     const conversation = await helpScoutClient.get<Conversation>(`/conversations/${input.conversationId}`);
 
-    // Get threads to find first customer message and latest staff reply
-    const threadsResponse = await helpScoutClient.get<PaginatedResponse<Thread>>(
-      `/conversations/${input.conversationId}/threads`,
-      { page: 1, size: 50 }
-    );
+    // Get all threads to find first customer message and latest staff reply
+    const { threads } = await this.fetchThreadPages(input.conversationId, 200);
 
-    const threads = threadsResponse._embedded?.threads || [];
+    // Verbose: return full conversation + all threads
+    if (verbose) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ conversation, threads }),
+        }],
+      };
+    }
+
     const customerThreads = threads.filter(t => t.type === 'customer');
     const staffThreads = threads.filter(t => t.type === 'message' && t.createdBy);
 
@@ -654,72 +1132,263 @@ export class ToolHandler {
     )[0];
 
     const summary = {
-      conversation: {
-        id: conversation.id,
-        subject: conversation.subject,
-        status: conversation.status,
-        createdAt: conversation.createdAt,
-        updatedAt: conversation.updatedAt,
-        customer: conversation.customer,
-        assignee: conversation.assignee,
-        tags: conversation.tags,
-      },
+      conversation: this.slimConversation(conversation),
       firstCustomerMessage: firstCustomerMessage ? {
         id: firstCustomerMessage.id,
-        body: config.security.allowPii ? firstCustomerMessage.body : '[REDACTED]',
+        body: config.security.allowPii ? firstCustomerMessage.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
         createdAt: firstCustomerMessage.createdAt,
         customer: firstCustomerMessage.customer,
       } : null,
       latestStaffReply: latestStaffReply ? {
         id: latestStaffReply.id,
-        body: config.security.allowPii ? latestStaffReply.body : '[REDACTED]',
+        body: config.security.allowPii ? latestStaffReply.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
         createdAt: latestStaffReply.createdAt,
         createdBy: latestStaffReply.createdBy,
       } : null,
     };
 
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(summary, null, 2),
-        },
-      ],
+      content: [{
+        type: 'text',
+        text: JSON.stringify(summary),
+      }],
     };
+  }
+
+  /**
+   * Extract clean message from Help Scout Beacon form HTML.
+   * Beacon forms come in two variants:
+   * 1. Hidden span + form table: actual message in <span style="display: none">
+   * 2. Form table only: Q&A pairs, last long answer is the message body
+   * Both may have a "View Full Ticket" source link to preserve.
+   */
+  private cleanBeaconForm(html: string): string {
+    // Detect Beacon form pattern: table with bgcolor="#EAEAEA"
+    const isBeaconForm = /bgcolor="#EAEAEA"/.test(html);
+    if (!isBeaconForm) return html;
+
+    // Extract source URL from "View Full Ticket" link (present in both variants)
+    const linkMatch = html.match(/<a\s+href="([^"]+)"[^>]*>View Full Ticket<\/a>/i);
+    const sourceUrl = linkMatch
+      ? linkMatch[1].replace(/&amp;/gi, '&')
+      : '';
+
+    // Variant 1: Hidden span contains the actual message
+    const hiddenMatch = html.match(/<span style="display: none">([\s\S]*?)<\/span>/i);
+    if (hiddenMatch && hiddenMatch[1].trim()) {
+      let cleaned = hiddenMatch[1];
+      if (sourceUrl) {
+        cleaned += `<br>\n<br>\nSource: ${sourceUrl}`;
+      }
+      return cleaned;
+    }
+
+    // Variant 2: Form table only — extract Q&A pairs, use last long answer as message
+    // Parse answer cells: they follow question cells in alternating bg-colored rows
+    const answerRegex = /<tr\s+bgcolor="#FFFFFF"[^>]*>[\s\S]*?<td[\s\S]*?<font[^>]*>([\s\S]*?)<\/font>[\s\S]*?<\/tr>/gi;
+    const answers: string[] = [];
+    let match;
+    while ((match = answerRegex.exec(html)) !== null) {
+      const text = match[1].trim();
+      if (text && text !== '&nbsp;') {
+        answers.push(text);
+      }
+    }
+
+    // The last answer is typically the detailed message ("Further describe...")
+    // Use it as the message body if it's substantially longer than other answers
+    let message = '';
+    if (answers.length > 0) {
+      const lastAnswer = answers[answers.length - 1];
+      message = lastAnswer;
+    }
+
+    if (sourceUrl) {
+      message += `<br>\n<br>\nSource: ${sourceUrl}`;
+    }
+
+    return message || html;
+  }
+
+  /**
+   * Strip HTML tags and collapse whitespace for transcript output.
+   */
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\t/g, ' ')
+      .replace(/ {2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .split('\n').map(line => line.trim()).join('\n')
+      .trim();
+  }
+
+  /**
+   * Build a transcript from threads: filter to customer/staff messages,
+   * strip HTML, respect redaction, sort chronologically.
+   */
+  private buildTranscript(threads: Thread[], maxMessages: number): Array<{
+    role: string;
+    from: string;
+    date: string;
+    body: string;
+    attachments?: number;
+  }> {
+    const dialogueThreads = threads.filter(t => {
+      const type = (t as any).type;
+      const state = (t as any).state;
+      if (type !== 'customer' && type !== 'message') return false;
+      if (state === 'draft') return false;
+      return true;
+    });
+
+    dialogueThreads.sort((a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    const limited = dialogueThreads.slice(0, maxMessages);
+
+    return limited.map(t => {
+      const type = (t as any).type;
+      const isCustomer = type === 'customer';
+      const person = isCustomer ? (t as any).customer : (t as any).createdBy;
+      const name = person
+        ? `${person.first || person.firstName || ''} ${person.last || person.lastName || ''}`.trim()
+        : (isCustomer ? 'Customer' : 'Staff');
+      const role = isCustomer ? 'customer' : 'staff';
+      const rawBody = t.body || '';
+      const body = config.security.allowPii
+        ? this.stripHtml(this.cleanBeaconForm(rawBody))
+        : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]';
+
+      return {
+        role,
+        from: name,
+        date: t.createdAt,
+        body,
+        ...(((t as any).attachments?.length > 0) ? { attachments: (t as any).attachments.length } : {}),
+      };
+    });
+  }
+
+  /**
+   * For an array of conversations, fetch threads and build transcripts in parallel.
+   */
+  private async attachTranscripts(
+    conversations: Array<Record<string, unknown>>,
+    maxMessages: number
+  ): Promise<Array<Record<string, unknown>>> {
+    const results = await Promise.allSettled(
+      conversations.map(async (conv) => {
+        const id = String(conv.id);
+        const { threads } = await this.fetchThreadPages(id, maxMessages);
+        const transcript = this.buildTranscript(threads, maxMessages);
+        return { ...conv, transcript };
+      })
+    );
+
+    return results.map((result, i) => {
+      if (result.status === 'fulfilled') return result.value;
+      logger.error('Failed to fetch transcript', {
+        conversationId: conversations[i].id,
+        error: result.reason?.message || String(result.reason),
+      });
+      return { ...conversations[i], transcript: null, transcriptError: 'Failed to fetch' };
+    });
   }
 
   private async getThreads(args: unknown): Promise<CallToolResult> {
     const input = GetThreadsInputSchema.parse(args);
-    // Using direct imports
+    const verbose = isVerbose(args);
 
-    const response = await helpScoutClient.get<PaginatedResponse<Thread>>(
-      `/conversations/${input.conversationId}/threads`,
-      {
-        page: 1,
-        size: input.limit,
-      }
+    // Auto-paginate: Help Scout may ignore size param for threads
+    const { threads: allThreads, totalElements } = await this.fetchThreadPages(
+      input.conversationId,
+      input.limit
     );
 
-    const threads = response._embedded?.threads || [];
+    let threads = allThreads.slice(0, input.limit);
 
-    // Redact PII if configured
-    const processedThreads = threads.map(thread => ({
-      ...thread,
-      body: config.security.allowPii ? thread.body : '[REDACTED]',
-    }));
+    // Transcript format: minimal customer/staff dialogue for AI analysis
+    if (input.format === 'transcript') {
+      const transcript = this.buildTranscript(threads, threads.length);
 
-    return {
-      content: [
-        {
+      return {
+        content: [{
           type: 'text',
           text: JSON.stringify({
             conversationId: input.conversationId,
-            threads: processedThreads,
-            pagination: response.page,
-            nextCursor: response._links?.next?.href,
-          }, null, 2),
-        },
-      ],
+            format: 'transcript',
+            messages: transcript,
+            totalMessages: transcript.length,
+            totalThreads: totalElements,
+          }),
+        }],
+      };
+    }
+
+    // Verbose: return raw thread objects (still redact if needed)
+    if (verbose) {
+      const redactedThreads = config.security.allowPii ? threads : threads.map(t => ({
+        ...t,
+        body: '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+      }));
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            conversationId: input.conversationId,
+            threads: redactedThreads,
+            pagination: { returned: threads.length, total: totalElements },
+          }),
+        }],
+      };
+    }
+
+    // Slim and redact threads
+    const processedThreads = threads.map(thread => ({
+      id: thread.id,
+      type: (thread as any).type,
+      status: (thread as any).status,
+      body: config.security.allowPii ? thread.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+      createdBy: (thread as any).createdBy ? {
+        id: (thread as any).createdBy.id,
+        type: (thread as any).createdBy.type,
+        first: (thread as any).createdBy.first || (thread as any).createdBy.firstName,
+        last: (thread as any).createdBy.last || (thread as any).createdBy.lastName,
+        email: (thread as any).createdBy.email,
+      } : null,
+      customer: (thread as any).customer ? {
+        id: (thread as any).customer.id,
+        first: (thread as any).customer.first || (thread as any).customer.firstName,
+        last: (thread as any).customer.last || (thread as any).customer.lastName,
+        email: (thread as any).customer.email,
+      } : null,
+      createdAt: thread.createdAt,
+      ...(((thread as any).attachments?.length > 0) ? { attachments: (thread as any).attachments.length } : {}),
+    }));
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          conversationId: input.conversationId,
+          threads: processedThreads,
+          pagination: { returned: threads.length, total: totalElements },
+        }),
+      }],
     };
   }
 
@@ -734,7 +1403,7 @@ export class ToolHandler {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(serverTime, null, 2),
+          text: JSON.stringify(serverTime),
         },
       ],
     };
@@ -742,7 +1411,6 @@ export class ToolHandler {
 
   private async listAllInboxes(args: unknown): Promise<CallToolResult> {
     const input = args as { limit?: number };
-    // Using direct import
     const limit = input.limit || 100;
 
     const response = await helpScoutClient.get<PaginatedResponse<Inbox>>('/mailboxes', {
@@ -757,179 +1425,46 @@ export class ToolHandler {
         {
           type: 'text',
           text: JSON.stringify({
-            inboxes: inboxes.map(inbox => ({
+            inboxes: isVerbose(args) ? inboxes : inboxes.map(inbox => ({
               id: inbox.id,
               name: inbox.name,
               email: inbox.email,
-              createdAt: inbox.createdAt,
-              updatedAt: inbox.updatedAt,
             })),
             totalInboxes: inboxes.length,
-            usage: 'Use the "id" field from these results in your conversation searches',
-            nextSteps: [
-              'To search in a specific inbox, use the inbox ID with comprehensiveConversationSearch or searchConversations',
-              'To search across all inboxes, omit the inboxId parameter',
-            ],
-          }, null, 2),
+          }),
         },
       ],
     };
   }
 
-  private async advancedConversationSearch(args: unknown): Promise<CallToolResult> {
-    const input = AdvancedConversationSearchInputSchema.parse(args);
-    // Using direct import
-
-    // Build HelpScout query syntax
-    const queryParts: string[] = [];
-
-    // Content/body search
-    if (input.contentTerms && input.contentTerms.length > 0) {
-      const bodyQueries = input.contentTerms.map(term => `body:"${term}"`);
-      queryParts.push(`(${bodyQueries.join(' OR ')})`);
-    }
-
-    // Subject search
-    if (input.subjectTerms && input.subjectTerms.length > 0) {
-      const subjectQueries = input.subjectTerms.map(term => `subject:"${term}"`);
-      queryParts.push(`(${subjectQueries.join(' OR ')})`);
-    }
-
-    // Email searches
-    if (input.customerEmail) {
-      queryParts.push(`email:"${input.customerEmail}"`);
-    }
-
-    // Handle email domain search (HelpScout supports domain-only searches)
-    if (input.emailDomain) {
-      const domain = input.emailDomain.replace('@', ''); // Remove @ if present
-      queryParts.push(`email:"${domain}"`);
-    }
-
-    // Tag search
-    if (input.tags && input.tags.length > 0) {
-      const tagQueries = input.tags.map(tag => `tag:"${tag}"`);
-      queryParts.push(`(${tagQueries.join(' OR ')})`);
-    }
-
-    // Build final query
-    const queryString = queryParts.length > 0 ? queryParts.join(' AND ') : undefined;
-
-    // Set up query parameters
-    const queryParams: Record<string, unknown> = {
-      page: 1,
-      size: input.limit || 50,
-      sortField: 'createdAt',
-      sortOrder: 'desc',
-    };
-
-    if (queryString) {
-      queryParams.query = queryString;
-    }
-
-    if (input.inboxId) queryParams.mailbox = input.inboxId;
-    if (input.status) queryParams.status = input.status;
-    if (input.createdAfter) queryParams.modifiedSince = input.createdAfter;
-
-    const response = await helpScoutClient.get<PaginatedResponse<Conversation>>('/conversations', queryParams);
-
-    let conversations = response._embedded?.conversations || [];
-
-    // Apply additional client-side filtering
-    if (input.createdBefore) {
-      const beforeDate = new Date(input.createdBefore);
-      conversations = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
-    }
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            results: conversations,
-            searchQuery: queryString,
-            searchCriteria: {
-              contentTerms: input.contentTerms,
-              subjectTerms: input.subjectTerms,
-              customerEmail: input.customerEmail,
-              emailDomain: input.emailDomain,
-              tags: input.tags,
-            },
-            pagination: response.page,
-            nextCursor: response._links?.next?.href,
-          }, null, 2),
-        },
-      ],
-    };
-  }
-
-  /**
-   * Performs comprehensive conversation search across multiple statuses
-   * @param args - Search parameters including search terms, statuses, and timeframe
-   * @returns Promise<CallToolResult> with search results organized by status
-   * @example
-   * comprehensiveConversationSearch({
-   *   searchTerms: ["urgent", "billing"],
-   *   timeframeDays: 30,
-   *   inboxId: "123456"
-   * })
-   */
-  private async comprehensiveConversationSearch(args: unknown): Promise<CallToolResult> {
-    const input = MultiStatusConversationSearchInputSchema.parse(args);
-
-    const searchContext = this.buildComprehensiveSearchContext(input);
-    const searchResults = await this.executeMultiStatusSearch(searchContext);
-    const summary = this.formatComprehensiveSearchResults(searchResults, searchContext);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(summary, null, 2),
-        },
-      ],
-    };
-  }
-
-  /**
-   * Build search context from input parameters
-   */
-  private buildComprehensiveSearchContext(input: z.infer<typeof MultiStatusConversationSearchInputSchema>) {
-    const createdAfter = input.createdAfter || this.calculateTimeRange(input.timeframeDays);
-    const searchQuery = this.buildSearchQuery(input.searchTerms, input.searchIn);
-
-    return {
-      input,
-      createdAfter,
-      searchQuery,
-    };
-  }
 
   /**
    * Calculate time range for search
+   * Note: Help Scout API requires ISO 8601 format WITHOUT milliseconds
    */
   private calculateTimeRange(timeframeDays: number): string {
     const timeRange = new Date();
-    // Use setTime to properly handle large day offsets
-    timeRange.setTime(timeRange.getTime() - (timeframeDays * 24 * 60 * 60 * 1000));
-    return timeRange.toISOString();
+    timeRange.setDate(timeRange.getDate() - timeframeDays);
+    // Strip milliseconds - Help Scout rejects dates with .xxx format
+    return timeRange.toISOString().replace(/\.\d{3}Z$/, 'Z');
   }
 
   /**
-   * Build Help Scout search query from terms and search locations
+   * Build Help Scout search query from terms and search locations (with injection protection)
    */
   private buildSearchQuery(terms: string[], searchIn: string[]): string {
     const queries: string[] = [];
 
     for (const term of terms) {
       const termQueries: string[] = [];
+      const escapedTerm = this.escapeQueryTerm(term);
 
       if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BODY) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
-        termQueries.push(`body:"${term}"`);
+        termQueries.push(`body:"${escapedTerm}"`);
       }
 
       if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.SUBJECT) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
-        termQueries.push(`subject:"${term}"`);
+        termQueries.push(`subject:"${escapedTerm}"`);
       }
 
       if (termQueries.length > 0) {
@@ -940,55 +1475,7 @@ export class ToolHandler {
     return queries.join(' OR ');
   }
 
-  /**
-   * Execute search across multiple statuses with error handling
-   */
-  private async executeMultiStatusSearch(context: {
-    input: z.infer<typeof MultiStatusConversationSearchInputSchema>;
-    createdAfter: string;
-    searchQuery: string;
-  }) {
-    const { input, createdAfter, searchQuery } = context;
-    // Using direct import
-    const allResults: Array<{
-      status: string;
-      totalCount: number;
-      conversations: Conversation[];
-      searchQuery: string;
-    }> = [];
 
-    for (const status of input.statuses) {
-      try {
-        const result = await this.searchSingleStatus({
-          status,
-          searchQuery,
-          createdAfter,
-          limitPerStatus: input.limitPerStatus,
-          inboxId: input.inboxId,
-          createdBefore: input.createdBefore,
-        });
-        allResults.push(result);
-      } catch (error) {
-        logger.warn('Failed to search conversations for status', {
-          status,
-          error: error instanceof Error ? error.message : String(error),
-        });
-
-        allResults.push({
-          status,
-          totalCount: 0,
-          conversations: [],
-          searchQuery,
-        });
-      }
-    }
-
-    return allResults;
-  }
-
-  /**
-   * Search conversations for a single status
-   */
   private async searchSingleStatus(params: {
     status: string;
     searchQuery: string;
@@ -996,77 +1483,109 @@ export class ToolHandler {
     limitPerStatus: number;
     inboxId?: string;
     createdBefore?: string;
+    verbose?: boolean;
   }) {
-    // Using direct import
+    const queryWithDate = this.appendCreatedAtFilter(
+      params.searchQuery,
+      params.createdAfter
+    );
+
     const queryParams: Record<string, unknown> = {
-      page: 1,
       size: params.limitPerStatus,
       sortField: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
       sortOrder: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
-      query: params.searchQuery,
+      query: queryWithDate || params.searchQuery,
       status: params.status,
-      modifiedSince: params.createdAfter,
     };
 
     if (params.inboxId) {
       queryParams.mailbox = params.inboxId;
     }
 
-    const response = await helpScoutClient.get<PaginatedResponse<Conversation>>('/conversations', queryParams);
-    let conversations = response._embedded?.conversations || [];
+    // Auto-paginate: Help Scout returns ~25/page regardless of size param
+    const { conversations: fetched, totalElements: apiTotalElements } =
+      await this.fetchConversationPages(queryParams, params.limitPerStatus);
 
-    // Apply client-side createdBefore filter
+    let conversations = fetched;
+
+    let filteredByDate = false;
     if (params.createdBefore) {
-      const beforeDate = new Date(params.createdBefore);
-      conversations = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
+      const result = this.applyCreatedBeforeFilter(conversations, params.createdBefore, `searchSingleStatus(${params.status})`);
+      conversations = result.filtered;
+      filteredByDate = result.wasFiltered;
+    }
+
+    if (conversations.length > params.limitPerStatus) {
+      conversations = conversations.slice(0, params.limitPerStatus);
     }
 
     return {
       status: params.status,
-      totalCount: response.page?.totalElements || conversations.length,
-      conversations,
-      searchQuery: params.searchQuery,
+      totalCount: filteredByDate ? conversations.length : apiTotalElements,
+      conversations: params.verbose ? conversations : conversations.map(c => this.slimConversation(c)),
     };
   }
 
-  /**
-   * Format comprehensive search results into summary response
-   */
-  private formatComprehensiveSearchResults(
-    allResults: Array<{
-      status: string;
-      totalCount: number;
-      conversations: Conversation[];
-      searchQuery: string;
-    }>,
-    context: {
-      input: z.infer<typeof MultiStatusConversationSearchInputSchema>;
-      createdAfter: string;
-      searchQuery: string;
+  private async structuredConversationFilter(args: unknown): Promise<CallToolResult> {
+    const input = StructuredConversationFilterInputSchema.parse(args);
+
+    const queryParams: Record<string, unknown> = {
+      page: 1,
+      size: input.limit,
+      sortField: input.sortBy,
+      sortOrder: input.sortOrder,
+    };
+
+    // Apply unique structural filters
+    if (input.assignedTo !== undefined) queryParams.assigned_to = input.assignedTo;
+    if (input.folderId !== undefined) queryParams.folder = input.folderId;
+    if (input.conversationNumber !== undefined) queryParams.number = input.conversationNumber;
+
+    // Apply customerIds via query syntax if provided
+    if (input.customerIds && input.customerIds.length > 0) {
+      queryParams.query = `(${input.customerIds.map(id => `customerIds:${id}`).join(' OR ')})`;
     }
-  ) {
-    const { input, createdAfter, searchQuery } = context;
-    const totalConversations = allResults.reduce((sum, result) => sum + result.conversations.length, 0);
-    const totalAvailable = allResults.reduce((sum, result) => sum + result.totalCount, 0);
+
+    // Apply combination filters
+    const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+    if (effectiveInboxId) queryParams.mailbox = effectiveInboxId;
+    queryParams.status = input.status || 'all';
+    if (input.tag) queryParams.tag = input.tag;
+    if (input.modifiedSince) queryParams.modifiedSince = input.modifiedSince;
+
+    const queryWithDate = this.appendCreatedAtFilter(
+      queryParams.query as string | undefined,
+      input.createdAfter
+    );
+    if (queryWithDate) queryParams.query = queryWithDate;
+
+    // Auto-paginate: Help Scout returns ~25/page regardless of size param
+    const { conversations: fetched, totalElements } = await this.fetchConversationPages(
+      queryParams,
+      input.limit
+    );
+    let conversations = fetched;
+
+    let clientSideFiltered = false;
+    if (input.createdBefore) {
+      const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'structuredConversationFilter');
+      conversations = result.filtered;
+      clientSideFiltered = result.wasFiltered;
+    }
+
+    if (conversations.length > input.limit) {
+      conversations = conversations.slice(0, input.limit);
+    }
 
     return {
-      searchTerms: input.searchTerms,
-      searchQuery,
-      searchIn: input.searchIn,
-      timeframe: {
-        createdAfter,
-        createdBefore: input.createdBefore,
-        days: input.timeframeDays,
-      },
-      totalConversationsFound: totalConversations,
-      totalAvailableAcrossStatuses: totalAvailable,
-      resultsByStatus: allResults,
-      searchTips: totalConversations === 0 ? [
-        'Try broader search terms or increase the timeframe',
-        'Check if the inbox ID is correct',
-        'Consider searching without status restrictions first',
-        'Verify that conversations exist for the specified criteria'
-      ] : undefined,
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          results: isVerbose(args) ? conversations : conversations.map(c => this.slimConversation(c)),
+          pagination: { returned: conversations.length, total: totalElements },
+          ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+        }),
+      }],
     };
   }
 }
