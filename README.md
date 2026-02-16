@@ -1,13 +1,12 @@
 # Help Scout MCP Server
 
-[![npm version](https://badge.fury.io/js/help-scout-mcp-server.svg)](https://badge.fury.io/js/help-scout-mcp-server)
-[![Docker](https://img.shields.io/docker/v/zackkatz/help-scout-mcp-server?logo=docker&label=docker)](https://hub.docker.com/r/zackkatz/help-scout-mcp-server)
+[![npm version](https://badge.fury.io/js/@gravitykit%2Fhelp-scout-mcp.svg)](https://www.npmjs.com/package/@gravitykit/help-scout-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://typescriptlang.org/)
 
 > **Help Scout MCP Server** - Connect Claude and other AI assistants to your Help Scout data with enterprise-grade security and advanced search capabilities.
 
-> **Note**: This is a fork of the original [help-scout-mcp-server](https://github.com/drewburchfield/help-scout-mcp-server) by Drew Burchfield.
+> **Note**: This is a fork of the original [help-scout-mcp](https://github.com/drewburchfield/help-scout-mcp) by Drew Burchfield.
 
 ## 📖 Table of Contents
 
@@ -54,7 +53,7 @@
 
 **Easiest setup using [DXT (Desktop Extensions)](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
 
-1. Download the latest [`.dxt` file from releases](https://github.com/zackkatz/help-scout-mcp-server/releases)
+1. Download the latest [`.dxt` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
 2. Double-click to install in Claude Desktop
 3. Enter your Help Scout App ID and App Secret when prompted
 4. Start using immediately!
@@ -66,7 +65,7 @@
   "mcpServers": {
     "helpscout": {
       "command": "npx",
-      "args": ["help-scout-mcp-server"],
+      "args": ["@gravitykit/help-scout-mcp"],
       "env": {
         "HELPSCOUT_APP_ID": "your-app-id",
         "HELPSCOUT_APP_SECRET": "your-app-secret"
@@ -76,20 +75,12 @@
 }
 ```
 
-### 🐳 Option 3: Docker
-
-```bash
-docker run -e HELPSCOUT_APP_ID="your-app-id" \
-  -e HELPSCOUT_APP_SECRET="your-app-secret" \
-  zackkatz/help-scout-mcp-server
-```
-
-### 💻 Option 4: Command Line
+### 💻 Option 3: Command Line
 
 ```bash
 HELPSCOUT_APP_ID="your-app-id" \
 HELPSCOUT_APP_SECRET="your-app-secret" \
-npx help-scout-mcp-server
+npx @gravitykit/help-scout-mcp
 ```
 
 ## Getting Your API Credentials
@@ -148,10 +139,10 @@ HELPSCOUT_APP_SECRET=your-app-secret-here
 # Test with environment variables
 HELPSCOUT_APP_ID="your-app-id" \
 HELPSCOUT_APP_SECRET="your-app-secret" \
-npx help-scout-mcp-server
+npx @gravitykit/help-scout-mcp
 
 # Or if using .env file
-npx help-scout-mcp-server
+npx @gravitykit/help-scout-mcp
 ```
 
 #### Troubleshooting OAuth Issues
@@ -597,14 +588,14 @@ export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
 
 ## Changelog
 
-See [GitHub Releases](https://github.com/zackkatz/help-scout-mcp-server/releases) for version history and release notes.
+See [GitHub Releases](https://github.com/GravityKit/help-scout-mcp/releases) for version history and release notes.
 
 ## Development
 
 ```bash
 # Quick start
-git clone https://github.com/zackkatz/help-scout-mcp-server.git
-cd help-scout-mcp-server
+git clone https://github.com/GravityKit/help-scout-mcp.git
+cd help-scout-mcp
 npm install && npm run build
 
 # Create .env file with your credentials (OAuth2)
@@ -670,7 +661,7 @@ If you're getting "Unknown URL" errors when accessing reports:
 **4. API Response Debugging**
 ```bash
 # Enable debug logging to see actual API responses
-LOG_LEVEL=debug npx help-scout-mcp-server
+LOG_LEVEL=debug npx @gravitykit/help-scout-mcp
 ```
 
 ### Debug Mode
@@ -678,13 +669,13 @@ LOG_LEVEL=debug npx help-scout-mcp-server
 Enable debug logging to troubleshoot issues:
 
 ```bash
-LOG_LEVEL=debug npx help-scout-mcp-server
+LOG_LEVEL=debug npx @gravitykit/help-scout-mcp
 ```
 
 ### Getting Help
 
 If you're still having issues:
-1. Check [existing issues](https://github.com/zackkatz/help-scout-mcp-server/issues)
+1. Check [existing issues](https://github.com/GravityKit/help-scout-mcp/issues)
 2. Enable debug logging and share relevant logs
 3. Include your configuration (without credentials!)
 
@@ -695,8 +686,8 @@ We welcome contributions! Here's how to get started:
 ### 🚀 Quick Development Setup
 
 ```bash
-git clone https://github.com/zackkatz/help-scout-mcp-server.git
-cd help-scout-mcp-server
+git clone https://github.com/GravityKit/help-scout-mcp.git
+cd help-scout-mcp
 npm install
 ```
 
@@ -745,9 +736,9 @@ We'd love to hear your ideas! Please open an issue describing:
 
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/zackkatz/help-scout-mcp-server/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/zackkatz/help-scout-mcp-server/discussions)
-- **NPM Package**: [help-scout-mcp-server](https://www.npmjs.com/package/help-scout-mcp-server)
+- **Issues**: [GitHub Issues](https://github.com/GravityKit/help-scout-mcp/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/GravityKit/help-scout-mcp/discussions)
+- **NPM Package**: [@gravitykit/help-scout-mcp](https://www.npmjs.com/package/@gravitykit/help-scout-mcp)
 
 ## License
 
@@ -755,4 +746,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**Need help?** [Open an issue](https://github.com/zackkatz/help-scout-mcp-server/issues) or check our [documentation](https://github.com/zackkatz/help-scout-mcp-server/wiki).
+**Need help?** [Open an issue](https://github.com/GravityKit/help-scout-mcp/issues) or check our [documentation](https://github.com/GravityKit/help-scout-mcp/wiki).
