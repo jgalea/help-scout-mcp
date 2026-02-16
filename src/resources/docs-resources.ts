@@ -1,10 +1,10 @@
-import { Resource } from '@modelcontextprotocol/sdk/types.js';
+import { TextResourceContents, Resource } from '@modelcontextprotocol/sdk/types.js';
 import { helpScoutDocsClient, DocsPaginatedResponse } from '../utils/helpscout-docs-client.js';
 import { DocsSite, DocsCollection, DocsCategory, DocsArticle } from '../schema/types.js';
 import { logger } from '../utils/logger.js';
 
 export class DocsResourceHandler {
-  async handleDocsResource(uri: string): Promise<Resource> {
+  async handleDocsResource(uri: string): Promise<TextResourceContents> {
     const url = new URL(uri);
     const protocol = url.protocol.slice(0, -1); // Remove trailing colon
     
@@ -31,7 +31,7 @@ export class DocsResourceHandler {
     }
   }
 
-  private async getSitesResource(params: Record<string, string>): Promise<Resource> {
+  private async getSitesResource(params: Record<string, string>): Promise<TextResourceContents> {
     try {
       const response = await helpScoutDocsClient.get<DocsPaginatedResponse<DocsSite>>('/sites', {
         page: parseInt(params.page || '1', 10),
@@ -39,8 +39,6 @@ export class DocsResourceHandler {
 
       return {
         uri: 'helpscout-docs://sites',
-        name: 'Help Scout Docs Sites',
-        description: 'All documentation sites accessible to your API key',
         mimeType: 'application/json',
         text: JSON.stringify({
           sites: response.items,
@@ -49,7 +47,7 @@ export class DocsResourceHandler {
             pages: response.pages,
             count: response.count,
           },
-        }, null, 2),
+        }),
       };
     } catch (error) {
       logger.error('Failed to fetch Docs sites', { error: error instanceof Error ? error.message : String(error) });
@@ -57,7 +55,7 @@ export class DocsResourceHandler {
     }
   }
 
-  private async getCollectionsResource(params: Record<string, string>): Promise<Resource> {
+  private async getCollectionsResource(params: Record<string, string>): Promise<TextResourceContents> {
     try {
       const queryParams: Record<string, unknown> = {
         page: parseInt(params.page || '1', 10),
@@ -72,8 +70,6 @@ export class DocsResourceHandler {
 
       return {
         uri: 'helpscout-docs://collections',
-        name: 'Help Scout Docs Collections',
-        description: 'Documentation collections',
         mimeType: 'application/json',
         text: JSON.stringify({
           collections: response.items,
@@ -82,7 +78,7 @@ export class DocsResourceHandler {
             pages: response.pages,
             count: response.count,
           },
-        }, null, 2),
+        }),
       };
     } catch (error) {
       logger.error('Failed to fetch Docs collections', { error: error instanceof Error ? error.message : String(error) });
@@ -90,7 +86,7 @@ export class DocsResourceHandler {
     }
   }
 
-  private async getCategoriesResource(params: Record<string, string>): Promise<Resource> {
+  private async getCategoriesResource(params: Record<string, string>): Promise<TextResourceContents> {
     const collectionId = params.collectionId;
     if (!collectionId) {
       throw new Error('collectionId parameter is required for categories resource');
@@ -106,8 +102,6 @@ export class DocsResourceHandler {
 
       return {
         uri: `helpscout-docs://categories?collectionId=${collectionId}`,
-        name: 'Help Scout Docs Categories',
-        description: `Categories in collection ${collectionId}`,
         mimeType: 'application/json',
         text: JSON.stringify({
           collectionId,
@@ -117,7 +111,7 @@ export class DocsResourceHandler {
             pages: response.pages,
             count: response.count,
           },
-        }, null, 2),
+        }),
       };
     } catch (error) {
       logger.error('Failed to fetch Docs categories', { 
@@ -128,7 +122,7 @@ export class DocsResourceHandler {
     }
   }
 
-  private async getArticlesResource(params: Record<string, string>): Promise<Resource> {
+  private async getArticlesResource(params: Record<string, string>): Promise<TextResourceContents> {
     const articleId = params.articleId;
     
     if (articleId) {
@@ -138,10 +132,8 @@ export class DocsResourceHandler {
         
         return {
           uri: `helpscout-docs://articles?articleId=${articleId}`,
-          name: 'Help Scout Docs Article',
-          description: `Article: ${article.name}`,
           mimeType: 'application/json',
-          text: JSON.stringify(article, null, 2),
+          text: JSON.stringify(article),
         };
       } catch (error) {
         logger.error('Failed to fetch Docs article', { 
@@ -170,8 +162,6 @@ export class DocsResourceHandler {
 
         return {
           uri: `helpscout-docs://articles?${params.collectionId ? 'collectionId=' + params.collectionId : 'categoryId=' + params.categoryId}`,
-          name: 'Help Scout Docs Articles',
-          description: `Articles in ${params.collectionId ? 'collection' : 'category'}`,
           mimeType: 'application/json',
           text: JSON.stringify({
             articles: response.items,
@@ -180,7 +170,7 @@ export class DocsResourceHandler {
               pages: response.pages,
               count: response.count,
             },
-          }, null, 2),
+          }),
         };
       } catch (error) {
         logger.error('Failed to fetch Docs articles', { 

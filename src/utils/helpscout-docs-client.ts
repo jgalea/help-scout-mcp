@@ -303,7 +303,7 @@ export class HelpScoutDocsClient {
       const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
       return {
         code: 'RATE_LIMIT',
-        message: `Help Scout Docs API rate limit exceeded. Please wait ${retryAfter} seconds before retrying.`,
+        message: `Help Scout Docs API rate limit exceeded. Please wait ${retryAfter} ${retryAfter === 1 ? 'second' : 'seconds'} before retrying.`,
         retryAfter,
         details: {
           requestId,

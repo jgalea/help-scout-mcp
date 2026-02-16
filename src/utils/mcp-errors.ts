@@ -195,7 +195,7 @@ export function createMcpResourceError(
 /**
  * Type guard to check if an error is our structured ApiError
  */
-function isApiError(error: unknown): error is ApiError {
+export function isApiError(error: unknown): error is ApiError {
   return (
     error !== null &&
     typeof error === 'object' &&

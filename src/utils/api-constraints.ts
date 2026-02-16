@@ -33,8 +33,6 @@ export class HelpScoutAPIConstraints {
     switch (toolName) {
       case 'searchConversations':
         return this.validateSearchConversations(args, userQuery, previousCalls);
-      case 'comprehensiveConversationSearch':
-        return this.validateComprehensiveSearch(args, userQuery, previousCalls);
       case 'getConversationSummary':
         return this.validateConversationSummary(args);
       case 'getThreads':
@@ -77,7 +75,7 @@ export class HelpScoutAPIConstraints {
     const hasTag = args.tag && typeof args.tag === 'string';
     
     if ((hasQuery || hasTag) && !hasStatus) {
-      suggestions.push('PERFORMANCE WARNING: Searching without status defaults to "active" only. Consider using comprehensiveConversationSearch for better results.');
+      suggestions.push('TIP: Searching without status defaults to all statuses. For keyword search, provide searchTerms parameter.');
     }
     
     // CONSTRAINT 3: API parameter mapping validation
@@ -108,44 +106,6 @@ export class HelpScoutAPIConstraints {
   }
   
   /**
-   * Validate comprehensive search based on API constraints
-   */
-  private static validateComprehensiveSearch(
-    args: Record<string, unknown>, 
-    userQuery: string, 
-    previousCalls: string[]
-  ): ValidationResult {
-    const errors: string[] = [];
-    const suggestions: string[] = [];
-    const requiredPrerequisites: string[] = [];
-    
-    // Same inbox validation as regular search
-    const inboxMentioned = this.detectInboxMention(userQuery);
-    const hasInboxId = args.inboxId && typeof args.inboxId === 'string';
-    const hasSearchedInboxes = previousCalls.includes('searchInboxes');
-    
-    if (inboxMentioned && !hasInboxId) {
-      if (!hasSearchedInboxes) {
-        requiredPrerequisites.push('searchInboxes');
-        suggestions.push('REQUIRED: Call searchInboxes first when user mentions specific inbox names');
-      }
-    }
-    
-    // Validate search terms
-    const searchTerms = args.searchTerms as string[] | undefined;
-    if (!searchTerms || !Array.isArray(searchTerms) || searchTerms.length === 0) {
-      errors.push('searchTerms is required and must be a non-empty array');
-    }
-    
-    return {
-      isValid: errors.length === 0,
-      errors,
-      suggestions,
-      requiredPrerequisites: requiredPrerequisites.length > 0 ? requiredPrerequisites : undefined
-    };
-  }
-  
-  /**
    * Validate conversation summary calls
    */
   private static validateConversationSummary(args: Record<string, unknown>): ValidationResult {
@@ -154,7 +114,7 @@ export class HelpScoutAPIConstraints {
     
     if (!args.conversationId || typeof args.conversationId !== 'string') {
       errors.push('conversationId is required');
-      suggestions.push('Get conversation ID from searchConversations or comprehensiveConversationSearch results');
+      suggestions.push('Get conversation ID from searchConversations results');
     } else if (!/^\d+$/.test(args.conversationId)) {
       errors.push('Invalid conversation ID format');
       suggestions.push('Conversation IDs should be numeric strings');
@@ -221,10 +181,12 @@ export class HelpScoutAPIConstraints {
       }
     }
     
-    if (toolName === 'searchConversations' || toolName === 'comprehensiveConversationSearch') {
-      const conversations = result?.results || result?.resultsByStatus || [];
-      const totalFound = Array.isArray(conversations) ? conversations.length : 
-        (result?.totalConversationsFound || 0);
+    if (toolName === 'searchConversations') {
+      // For keyword search mode, totalConversationsFound is the actual count
+      // resultsByStatus is an array of status objects, not conversations
+      const totalFound = result?.totalConversationsFound !== undefined
+        ? result.totalConversationsFound
+        : (result?.results?.length || 0);
       
       if (totalFound === 0) {
         guidance.push('❌ No conversations found. Try:');
