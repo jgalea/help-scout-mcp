@@ -1,12 +1,16 @@
 import { cache } from '../utils/cache.js';
 
 describe('Cache', () => {
+  let consoleErrorSpy: jest.SpyInstance;
+
   beforeEach(() => {
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     cache.clear();
   });
 
   afterEach(() => {
     cache.clear();
+    consoleErrorSpy.mockRestore();
   });
 
   describe('basic operations', () => {
