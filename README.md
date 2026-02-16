@@ -216,6 +216,7 @@ npx help-scout-mcp-server
 | `getDocsArticle` | Get full article content | Read complete documentation |
 | `getTopDocsArticles` | Get most popular articles by views with NLP support | Find most-read documentation |
 | `listRelatedDocsArticles` | Get articles related to a given article | Content discovery |
+| `updateDocsViewCount` | Update the view count for an article | Analytics tracking |
 | `createDocsArticle` | Create a new article | Content creation |
 | `updateDocsArticle` | Update article content/properties | Modify documentation |
 | `deleteDocsArticle` | Delete an article (requires `HELPSCOUT_ALLOW_DOCS_DELETE=true`) | Content management |
@@ -407,9 +408,45 @@ The server provides three response modes to optimize token usage and support dif
 
 Every conversation and thread is stripped to just the fields that matter: id, number, subject, status, preview, assignee, customer, tags, and dates. All Help Scout API cruft (`_links`, `_embedded`, `closedByUser`, source metadata, tag styles, photo URLs, etc.) is removed automatically.
 
+```json
+{
+  "id": 98234,
+  "number": 14052,
+  "subject": "Can't export to CSV",
+  "status": "active",
+  "preview": "When I click Export, nothing happens...",
+  "assignee": { "first": "Rafael", "last": "Smith" },
+  "customer": { "first": "Maria", "last": "Garcia", "email": "maria@example.com" },
+  "tags": ["tech-support"],
+  "createdAt": "2026-02-14T10:30:00Z"
+}
+```
+
 ### Verbose (`verbose: true`)
 
 Returns the full, raw Help Scout API response objects. Useful for debugging or when you need a specific field that slim mode strips out. Available on every tool via a single boolean flag.
+
+```json
+{
+  "id": 98234,
+  "number": 14052,
+  "subject": "Can't export to CSV",
+  "status": "active",
+  "state": "published",
+  "type": "email",
+  "preview": "When I click Export, nothing happens...",
+  "mailboxId": 256809,
+  "assignee": { "id": 12345, "first": "Rafael", "last": "Smith", "email": "rafael@company.com" },
+  "createdBy": { "id": 67890, "type": "customer" },
+  "customer": { "id": 67890, "first": "Maria", "last": "Garcia", "email": "maria@example.com" },
+  "tags": [{ "id": 13974028, "name": "tech-support", "color": "#929292" }],
+  "closedBy": null,
+  "closedByUser": null,
+  "source": { "type": "email", "via": "customer" },
+  "_links": { "self": { "href": "..." }, "threads": { "href": "..." }, "mailbox": { "href": "..." } },
+  "_embedded": { "threads": { "_links": { "..." } } }
+}
+```
 
 ### Transcript
 
@@ -428,10 +465,22 @@ Transcripts:
 
 #### Inline Transcripts on Search
 
-Before `includeTranscripts`, summarizing 10 tickets required 11 API calls (1 search + 10 thread fetches). Now it's a single call:
+**Before** — summarizing 10 tickets required 11 API calls:
 
 ```javascript
-searchConversations({ includeTranscripts: true })
+// 1. Search for conversations
+const results = searchConversations({ limit: 10 })
+
+// 2. Fetch threads for each conversation individually
+for (const conversation of results) {
+  getThreads({ conversationId: conversation.id, format: "transcript" })
+}
+```
+
+**After** — a single call:
+
+```javascript
+searchConversations({ includeTranscripts: true, limit: 10 })
 ```
 
 Returns conversations with inline transcript arrays:
@@ -440,13 +489,13 @@ Returns conversations with inline transcript arrays:
 {
   "results": [
     {
-      "id": 71406,
-      "subject": "GravityView activation error",
-      "status": "closed",
-      "customer": { "first": "Robert" },
+      "id": 98234,
+      "subject": "Can't export to CSV",
+      "status": "active",
+      "customer": { "first": "Maria" },
       "transcript": [
-        { "role": "customer", "from": "Robert", "date": "...", "body": "PHP Fatal error: ..." },
-        { "role": "staff", "from": "Rafael", "date": "...", "body": "Looks like a corrupted install..." }
+        { "role": "customer", "from": "Maria", "date": "...", "body": "When I click Export, nothing happens..." },
+        { "role": "staff", "from": "Rafael", "date": "...", "body": "Could you try disabling your browser extensions?" }
       ]
     }
   ],
