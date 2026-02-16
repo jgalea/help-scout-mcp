@@ -1,21 +1,29 @@
 {
-  "dxt_version": "0.1",
-  "name": "help-scout-mcp-server",
+  "manifest_version": "0.3",
+  "name": "help-scout-mcp",
   "display_name": "Help Scout MCP Server",
   "version": "1.7.0",
   "description": "Connect Claude to your Help Scout data for intelligent customer support analysis",
-  "long_description": "Enterprise-grade Help Scout integration for AI assistants.\n\n**Core Features:**\n• Advanced conversation search with query syntax\n• Multi-status search across active/pending/closed conversations\n• Boolean search with OR/AND logic across multiple fields\n• Complete thread message retrieval with context\n• Conversation summaries with customer and staff messages\n• Inbox discovery and server time utilities\n\n**Enterprise Security:**\n• OAuth2 Client Credentials authentication\n• Optional PII redaction for data privacy\n• Comprehensive audit logging\n• Rate limiting with automatic retry",
+  "long_description": "Help Scout integration for AI assistants.\n\n**Core Features:**\n- Advanced conversation search with query syntax\n- Multi-status search across active/pending/closed conversations\n- Inline transcripts for single-call ticket summarization\n- Structured filtering by ticket number, assignee, customer, or folder\n- Complete thread message retrieval with transcript format\n- Conversation summaries with customer and staff messages\n- Inbox discovery and server time utilities\n\n**Optional Features** (require additional configuration):\n- Full Docs API integration (articles, collections, categories)\n- Complete Reports API (email, chat, phone, happiness, company)\n\n**Security:**\n- OAuth2 Client Credentials authentication\n- Optional message content redaction via `REDACT_MESSAGE_CONTENT`\n- Comprehensive audit logging\n- Rate limiting with automatic retry",
   "author": {
-    "name": "Drew Burchfield",
-    "url": "https://github.com/zackkatz"
+    "name": "GravityKit",
+    "url": "https://github.com/GravityKit"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/zackkatz/help-scout-mcp-server"
+    "url": "https://github.com/GravityKit/help-scout-mcp"
   },
-  "documentation": "https://github.com/zackkatz/help-scout-mcp-server#readme",
+  "homepage": "https://github.com/GravityKit/help-scout-mcp",
+  "documentation": "https://github.com/GravityKit/help-scout-mcp#readme",
+  "support": "https://github.com/GravityKit/help-scout-mcp/issues",
   "icon": "icon.svg",
   "screenshots": [],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
   "server": {
     "type": "node",
     "entry_point": "build/server/index.js",
@@ -25,30 +33,27 @@
         "${__dirname}/build/server/index.js"
       ],
       "env": {
-        "HELPSCOUT_CLIENT_ID": "${user_config.client_id}",
-        "HELPSCOUT_CLIENT_SECRET": "${user_config.app_secret}",
-        "HELPSCOUT_API_KEY": "${user_config.client_id}",
+        "HELPSCOUT_APP_ID": "${user_config.app_id}",
         "HELPSCOUT_APP_SECRET": "${user_config.app_secret}",
         "HELPSCOUT_BASE_URL": "${user_config.base_url}",
-        "ALLOW_PII": "${user_config.allow_pii}",
+        "REDACT_MESSAGE_CONTENT": "${user_config.redact_message_content}",
         "LOG_LEVEL": "${user_config.log_level}",
-        "CACHE_TTL_SECONDS": "${user_config.cache_ttl}",
-        "MAX_CACHE_SIZE": "${user_config.max_cache_size}"
+        "CACHE_TTL_SECONDS": "${user_config.cache_ttl}"
       }
     }
   },
   "user_config": {
-    "client_id": {
+    "app_id": {
       "type": "string",
-      "title": "Help Scout Client ID",
-      "description": "Your OAuth2 Client ID from Help Scout My Apps",
+      "title": "Help Scout App ID",
+      "description": "Your OAuth2 App ID from Help Scout My Apps",
       "sensitive": true,
       "required": true
     },
     "app_secret": {
       "type": "string",
-      "title": "Help Scout Client Secret",
-      "description": "Your OAuth2 Client Secret from Help Scout My Apps",
+      "title": "Help Scout App Secret",
+      "description": "Your OAuth2 App Secret from Help Scout My Apps",
       "sensitive": true,
       "required": true
     },
@@ -59,10 +64,10 @@
       "default": "https://api.helpscout.net/v2/",
       "required": false
     },
-    "allow_pii": {
+    "redact_message_content": {
       "type": "boolean",
-      "title": "Allow PII",
-      "description": "Allow personally identifiable information in message bodies",
+      "title": "Redact Message Content",
+      "description": "Hide message bodies in responses for privacy",
       "default": false,
       "required": false
     },
@@ -79,23 +84,16 @@
       "description": "How long to cache API responses",
       "default": 300,
       "required": false
-    },
-    "max_cache_size": {
-      "type": "number",
-      "title": "Max Cache Size",
-      "description": "Maximum number of cached entries",
-      "default": 10000,
-      "required": false
     }
   },
   "tools": [
     {
-      "name": "searchInboxes",
-      "description": "Search Help Scout inboxes by name"
+      "name": "searchConversations",
+      "description": "Search conversations by keywords, structured filters, or list by status/date/inbox. Supports includeTranscripts for inline message content."
     },
     {
-      "name": "searchConversations",
-      "description": "Search Help Scout conversations with various filters including full-text content search"
+      "name": "structuredConversationFilter",
+      "description": "Lookup by ticket number, assignee, customer ID, or folder ID"
     },
     {
       "name": "getConversationSummary",
@@ -103,26 +101,28 @@
     },
     {
       "name": "getThreads",
-      "description": "Retrieve all thread messages for a conversation"
+      "description": "Retrieve all thread messages for a conversation with optional transcript format"
+    },
+    {
+      "name": "searchInboxes",
+      "description": "Search Help Scout inboxes by name"
+    },
+    {
+      "name": "listAllInboxes",
+      "description": "List all accessible inboxes with their IDs"
     },
     {
       "name": "getServerTime",
       "description": "Get current server time for date-relative queries"
-    },
-    {
-      "name": "advancedConversationSearch",
-      "description": "Advanced conversation search with complex boolean queries and customer organization support"
-    },
-    {
-      "name": "comprehensiveConversationSearch",
-      "description": "Search conversations across multiple statuses simultaneously - automatically searches active, pending, and closed conversations"
-    },
-    {
-      "name": "listAllInboxes",
-      "description": "List all accessible inboxes with their IDs - quick helper for seeing available inboxes"
     }
   ],
+  "tools_generated": true,
   "prompts": [
+    {
+      "name": "summarize-latest-tickets",
+      "description": "Summarize latest tickets with transcripts",
+      "text": "Use searchConversations with includeTranscripts: true to get the latest tickets with inline message transcripts, then summarize the key themes and issues."
+    },
     {
       "name": "search-last-7-days",
       "description": "Find recent conversations from the last 7 days",
@@ -145,7 +145,9 @@
     "mcp",
     "helpscout",
     "support",
-    "conversations"
+    "conversations",
+    "docs",
+    "reports"
   ],
   "license": "MIT"
 }
