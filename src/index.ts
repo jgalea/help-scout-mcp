@@ -294,7 +294,7 @@ async function main(): Promise<void> {
   }
 }
 
-// Start the server when this module is executed directly (either via `node dist/index.js` or via an npm bin stub such as `npx help-scout-mcp-server`)
+// Start the server when this module is executed directly (either via `node dist/index.js` or via an npm bin stub such as `npx @gravitykit/help-scout-mcp`)
 // Use a simpler approach that Jest can handle - check if we're in a test environment
 const isTestEnvironment = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 const invokedFromCLI = !isTestEnvironment;

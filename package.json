@@ -1,11 +1,11 @@
 {
-  "name": "help-scout-mcp-server",
+  "name": "@gravitykit/help-scout-mcp",
   "version": "1.7.0",
-  "description": "The first MCP server for Help Scout - search conversations, threads, and inboxes with AI agents",
+  "description": "Help Scout MCP server: search conversations, fetch transcripts, browse docs, and pull reports — all from Claude or any MCP client",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
-    "help-scout-mcp-server": "dist/index.js"
+    "help-scout-mcp": "dist/index.js"
   },
   "files": [
     "dist/",
@@ -55,11 +55,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zackkatz/help-scout-mcp-server.git"
+    "url": "git+https://github.com/GravityKit/help-scout-mcp.git"
   },
-  "homepage": "https://github.com/zackkatz/help-scout-mcp-server#readme",
+  "homepage": "https://github.com/GravityKit/help-scout-mcp#readme",
   "bugs": {
-    "url": "https://github.com/zackkatz/help-scout-mcp-server/issues"
+    "url": "https://github.com/GravityKit/help-scout-mcp/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

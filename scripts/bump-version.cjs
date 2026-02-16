@@ -43,8 +43,8 @@ function updateDockerfile(newVersion) {
   
   // Update version label in Dockerfile
   dockerfile = dockerfile.replace(
-    /LABEL name="help-scout-mcp-server" \\\s*description="[^"]*" \\\s*version="[^"]*"/,
-    `LABEL name="help-scout-mcp-server" \\
+    /LABEL name="help-scout-mcp" \\\s*description="[^"]*" \\\s*version="[^"]*"/,
+    `LABEL name="help-scout-mcp" \\
       description="Help Scout MCP server for searching inboxes, conversations, and threads" \\
       version="${newVersion}"`
   );

@@ -6,8 +6,8 @@ Thank you for your interest in contributing! This guide will help you get starte
 
 1. **Fork and clone the repository**
 ```bash
-git clone https://github.com/zackkatz/help-scout-mcp-server.git
-cd help-scout-mcp-server
+git clone https://github.com/GravityKit/help-scout-mcp.git
+cd help-scout-mcp
 ```
 
 2. **Install dependencies**
