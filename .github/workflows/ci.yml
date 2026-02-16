@@ -50,6 +50,7 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance --access public
+        continue-on-error: true
 
       - name: Build MCPB extension
         run: npm run mcpb:build && cd helpscout-mcp-extension && npx @anthropic-ai/mcpb pack
