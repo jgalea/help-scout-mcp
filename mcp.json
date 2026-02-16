@@ -1,7 +1,7 @@
 {
   "name": "helpscout-search",
   "description": "MCP server for Help Scout — search conversations, fetch transcripts, browse docs, and pull reports.",
-  "version": "1.7.0",
+  "version": "2.0.0",
   "mcpVersion": "1.17.4",
   "resources": [
     "helpscout://inboxes",

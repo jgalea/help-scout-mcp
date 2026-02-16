@@ -1318,7 +1318,7 @@ export class ToolHandler {
       input.limit
     );
 
-    let threads = allThreads.slice(0, input.limit);
+    const threads = allThreads.slice(0, input.limit);
 
     // Transcript format: minimal customer/staff dialogue for AI analysis
     if (input.format === 'transcript') {
