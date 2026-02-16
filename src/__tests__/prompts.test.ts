@@ -19,8 +19,12 @@ jest.unstable_mockModule('../utils/logger.js', () => ({
 describe('PromptHandler', () => {
   let PromptHandler: any;
   let promptHandler: any;
+  let consoleErrorSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(async () => {
+    // Silence logger output during tests
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
     // Clear all mocks
     jest.clearAllMocks();
 
@@ -28,6 +32,10 @@ describe('PromptHandler', () => {
     const module = await import('../prompts/index.js');
     PromptHandler = module.PromptHandler;
     promptHandler = new PromptHandler();
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
   });
 
   describe('listPrompts', () => {
