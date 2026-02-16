@@ -11,15 +11,16 @@
 
 ## 📖 Table of Contents
 
-- [🎉 What's New](#-whats-new-in-v120)
+- [🎉 What's New](#-whats-new)
 - [⚡ Quick Start](#quick-start)
 - [🔑 API Credentials](#getting-your-api-credentials)
 - [🛠️ Tools & Capabilities](#tools--capabilities)
+- [📋 Response Modes](#response-modes)
 - [⚙️ Configuration](#configuration-options)
 - [🔍 Troubleshooting](#troubleshooting)
 - [🤝 Contributing](#contributing)
 
-## 🎉 What's New in v1.3.0
+## 🎉 What's New
 
 - **📚 Full Docs API Integration**: Complete support for Help Scout Docs API
   - Browse and search documentation sites, collections, categories, and articles
@@ -32,7 +33,7 @@
   - Happiness reports with satisfaction scores and feedback
   - Docs analytics with article views and visitor metrics
 - **🎯 DXT Extension**: One-click installation for Claude Desktop
-- **🔧 Clear Environment Variables**: `HELPSCOUT_CLIENT_ID` and `HELPSCOUT_CLIENT_SECRET`
+- **🔧 Clear Environment Variables**: `HELPSCOUT_APP_ID` and `HELPSCOUT_APP_SECRET`
 - **⚡ Connection Pooling**: Improved performance with HTTP connection reuse
 - **🛡️ Enhanced Security**: Comprehensive input validation and API constraints
 - **🔄 Dependency Injection**: Cleaner architecture with ServiceContainer
@@ -42,7 +43,7 @@
 
 - **Node.js 18+** (for command line usage)
 - **Help Scout Account** with API access
-- **OAuth2 App** or **Personal Access Token** from Help Scout
+- **OAuth2 App** from Help Scout (Personal Access Tokens are no longer supported)
 - **Claude Desktop** (for DXT installation) or any MCP-compatible client
 
 > **Note**: The DXT extension includes Node.js, so no local installation needed for Claude Desktop users.
@@ -55,7 +56,7 @@
 
 1. Download the latest [`.dxt` file from releases](https://github.com/zackkatz/help-scout-mcp-server/releases)
 2. Double-click to install in Claude Desktop
-3. Enter your Help Scout OAuth2 Client ID and Client Secret when prompted
+3. Enter your Help Scout App ID and App Secret when prompted
 4. Start using immediately!
 
 ### 📋 Option 2: Claude Desktop (Manual Config)
@@ -67,8 +68,8 @@
       "command": "npx",
       "args": ["help-scout-mcp-server"],
       "env": {
-        "HELPSCOUT_CLIENT_ID": "your-client-id",
-        "HELPSCOUT_CLIENT_SECRET": "your-client-secret"
+        "HELPSCOUT_APP_ID": "your-app-id",
+        "HELPSCOUT_APP_SECRET": "your-app-secret"
       }
     }
   }
@@ -78,16 +79,16 @@
 ### 🐳 Option 3: Docker
 
 ```bash
-docker run -e HELPSCOUT_CLIENT_ID="your-client-id" \
-  -e HELPSCOUT_CLIENT_SECRET="your-client-secret" \
+docker run -e HELPSCOUT_APP_ID="your-app-id" \
+  -e HELPSCOUT_APP_SECRET="your-app-secret" \
   zackkatz/help-scout-mcp-server
 ```
 
 ### 💻 Option 4: Command Line
 
 ```bash
-HELPSCOUT_CLIENT_ID="your-client-id" \
-HELPSCOUT_CLIENT_SECRET="your-client-secret" \
+HELPSCOUT_APP_ID="your-app-id" \
+HELPSCOUT_APP_SECRET="your-app-secret" \
 npx help-scout-mcp-server
 ```
 
@@ -132,21 +133,21 @@ Select the scopes your app needs:
 #### Step 4: Configure the MCP Server
 Set these environment variables:
 ```bash
-export HELPSCOUT_CLIENT_ID="your-app-id-here"
-export HELPSCOUT_CLIENT_SECRET="your-app-secret-here"
+export HELPSCOUT_APP_ID="your-app-id-here"
+export HELPSCOUT_APP_SECRET="your-app-secret-here"
 ```
 
 Or add to your `.env` file:
 ```env
-HELPSCOUT_CLIENT_ID=your-app-id-here
-HELPSCOUT_CLIENT_SECRET=your-app-secret-here
+HELPSCOUT_APP_ID=your-app-id-here
+HELPSCOUT_APP_SECRET=your-app-secret-here
 ```
 
 #### Step 5: Test Your Configuration
 ```bash
 # Test with environment variables
-HELPSCOUT_CLIENT_ID="your-app-id" \
-HELPSCOUT_CLIENT_SECRET="your-app-secret" \
+HELPSCOUT_APP_ID="your-app-id" \
+HELPSCOUT_APP_SECRET="your-app-secret" \
 npx help-scout-mcp-server
 
 # Or if using .env file
@@ -155,21 +156,9 @@ npx help-scout-mcp-server
 
 #### Troubleshooting OAuth Issues
 - **"Unknown URL" for Reports**: Ensure your account has a Plus/Pro plan
-- **Authentication Failed**: Double-check your Client ID and Secret
+- **Authentication Failed**: Double-check your App ID and App Secret
 - **Missing Scopes**: Go back to My Apps and edit your app's permissions
 - **Token Expired**: The server handles refresh automatically
-
-### 🔐 **Alternative: Personal Access Token**
-
-For quick testing or personal use only. These tokens don't auto-refresh.
-
-1. Go to **Help Scout** → **Your Profile** → **Authentication**
-2. Under **API Keys**, click **Generate an API Key**
-3. Give it a memorable label (e.g., "MCP Server")
-4. Copy the generated token
-5. Use in configuration: `HELPSCOUT_API_KEY=Bearer your-token-here`
-
-**⚠️ Note**: Personal Access Tokens expire and must be manually regenerated.
 
 ### 📚 **For Docs API Access**
 
@@ -195,39 +184,61 @@ For quick testing or personal use only. These tokens don't auto-refresh.
 
 ## Tools & Capabilities
 
-### Core Search Tools
+### Conversation Tools
 
 | Tool | Description | Best For |
 |------|-------------|----------|
-| `searchConversations` | **⭐ For Listing** - Can omit query to list ALL recent conversations | "Show me recent tickets", browsing conversations |
-| `comprehensiveConversationSearch` | **🔍 For Content Search** - Requires search terms, searches all statuses | "Find tickets about billing issues", content-based searches |
-| `advancedConversationSearch` | Boolean queries with content/subject/email filtering | Complex search requirements |
-| `searchInboxes` | Find inboxes by name | Discovering available inboxes |
-
-### Analysis & Retrieval Tools
-
-| Tool | Description | Use Case |
-|------|-------------|----------|
-| `getConversationSummary` | Customer message + latest staff reply summary | Quick conversation overview |
-| `getThreads` | Complete conversation message history | Full context analysis |
+| `searchConversations` | Search by keywords, structured filters, or list by status/date/inbox. Supports `includeTranscripts` for inline message content. | Listing, keyword search, content search, summarization |
+| `structuredConversationFilter` | Lookup by ticket number, assignee, customer ID, or folder ID | Ticket lookup, assignee filtering |
+| `getConversationSummary` | First customer message + latest staff reply | Quick conversation overview |
+| `getThreads` | Full message history with optional `transcript` format | Full context analysis |
+| `searchInboxes` | Find inboxes by name (deprecated: IDs in server instructions) | Discovering available inboxes |
+| `listAllInboxes` | List all inboxes with IDs (deprecated: IDs in server instructions) | Refreshing inbox list mid-session |
 | `getServerTime` | Current server timestamp | Time-relative searches |
 
 ### Documentation Tools
 
+> Set `HELPSCOUT_DISABLE_DOCS=true` to hide all Docs tools if you don't use Help Scout Docs.
+
 | Tool | Description | Use Case |
 |------|-------------|----------|
 | `listDocsSites` | List all documentation sites with NLP filtering | Discover available sites |
+| `getDocsSite` | Get a specific site by ID | Site details |
 | `listDocsCollections` | List collections with site NLP resolution | Browse documentation structure |
-| `listDocsCategories` | List categories in a collection | Navigate collection organization |
-| `listDocsArticlesByCollection` | List articles in a collection (sort by popularity) | Find articles by collection |
-| `listDocsArticlesByCategory` | List articles in a category (sort by popularity) | Find articles by category |
-| `getDocsArticle` | Get full article content | Read complete documentation |
-| `updateDocsArticle` | Update article content/properties | Modify documentation |
-| `updateDocsCollection` | Update collection properties | Manage collections |
-| `updateDocsCategory` | Update category properties | Manage categories |
-| `getTopDocsArticles` | Get most popular articles by views with NLP support | Find most-read documentation |
+| `getDocsCollection` | Get a specific collection by ID | Collection details |
 | `listAllDocsCollections` | List all available collections across sites | Discover available content |
 | `getSiteCollections` | Get collections for a specific site using NLP | Find site-specific collections |
+| `listDocsCategories` | List categories in a collection | Navigate collection organization |
+| `getDocsCategory` | Get a specific category by ID | Category details |
+| `listDocsArticlesByCollection` | List articles in a collection (sort by popularity) | Find articles by collection |
+| `listDocsArticlesByCategory` | List articles in a category (sort by popularity) | Find articles by category |
+| `searchDocsArticles` | Search articles by keyword across sites/collections | Content search |
+| `getDocsArticle` | Get full article content | Read complete documentation |
+| `getTopDocsArticles` | Get most popular articles by views with NLP support | Find most-read documentation |
+| `listRelatedDocsArticles` | Get articles related to a given article | Content discovery |
+| `createDocsArticle` | Create a new article | Content creation |
+| `updateDocsArticle` | Update article content/properties | Modify documentation |
+| `deleteDocsArticle` | Delete an article (requires `HELPSCOUT_ALLOW_DOCS_DELETE=true`) | Content management |
+| `uploadDocsArticle` | Upload an article from a file | Bulk content import |
+| `createDocsCategory` | Create a new category in a collection | Organize documentation |
+| `updateDocsCategory` | Update category properties | Manage categories |
+| `updateDocsCategoryOrder` | Reorder categories within a collection | Organize documentation |
+| `deleteDocsCategory` | Delete a category | Content management |
+| `createDocsCollection` | Create a new collection on a site | Organize documentation |
+| `updateDocsCollection` | Update collection properties | Manage collections |
+| `deleteDocsCollection` | Delete a collection | Content management |
+| `listDocsArticleRevisions` | List revisions for an article | Version history |
+| `getDocsArticleRevision` | Get a specific article revision | Version comparison |
+| `saveDocsArticleDraft` | Save an article draft | Drafting content |
+| `deleteDocsArticleDraft` | Delete an article draft | Draft management |
+| `listDocsRedirects` | List URL redirects for a site | Redirect management |
+| `getDocsRedirect` / `findDocsRedirect` | Get or find a redirect | Redirect lookup |
+| `createDocsRedirect` / `updateDocsRedirect` / `deleteDocsRedirect` | Manage redirects | URL management |
+| `createDocsSite` / `updateDocsSite` / `deleteDocsSite` | Manage Docs sites | Site management |
+| `getDocsSiteRestrictions` / `updateDocsSiteRestrictions` | Manage site access restrictions | Access control |
+| `createDocsArticleAsset` / `createDocsSettingsAsset` | Upload assets (images, files) | Asset management |
+| `testDocsConnection` | Test Docs API connectivity | Troubleshooting |
+| `clearDocsCache` | Clear cached Docs data | Cache management |
 
 ### Reports & Analytics Tools
 
@@ -240,6 +251,7 @@ For quick testing or personal use only. These tokens don't auto-refresh.
 | `getUserReport` | User/team performance report with productivity metrics and happiness scores | Plus/Pro plan required |
 | `getCompanyReport` | Company-wide analytics with customer volume and team performance | Plus/Pro plan required |
 | `getHappinessReport` | Customer satisfaction scores and feedback analysis | Plus/Pro plan required |
+| `getHappinessRatings` | Individual happiness ratings with conversation details | Plus/Pro plan required |
 | `getDocsReport` | Comprehensive docs analytics report with article views and visitor metrics | Plus/Pro plan required |
 
 ### Resources
@@ -258,13 +270,12 @@ For quick testing or personal use only. These tokens don't auto-refresh.
 
 ## Search Examples
 
-> **📝 Key Distinction**: Use `searchConversations` (without query) for **listing** conversations, use `comprehensiveConversationSearch` (with search terms) for **finding** specific content.
+> **Tip**: `searchConversations` handles listing, keyword search, and structured search — use different parameters for different needs.
 
 ### Listing Recent Conversations
 ```javascript
 // Best for "show me recent tickets" - omit query parameter
 searchConversations({
-  status: "active",
   limit: 25,
   sort: "createdAt",
   order: "desc"
@@ -273,8 +284,8 @@ searchConversations({
 
 ### Content-Based Search
 ```javascript
-// Best for "find tickets about X" - requires search terms
-comprehensiveConversationSearch({
+// Best for "find tickets about X" - uses keyword search
+searchConversations({
   searchTerms: ["urgent", "billing"],
   timeframeDays: 60,
   inboxId: "256809"
@@ -284,14 +295,14 @@ comprehensiveConversationSearch({
 ### Content-Specific Searches
 ```javascript
 // Search in message bodies and subjects
-comprehensiveConversationSearch({
+searchConversations({
   searchTerms: ["refund", "cancellation"],
   searchIn: ["both"],
   timeframeDays: 30
 })
 
-// Customer organization search
-advancedConversationSearch({
+// Customer organization search (structured fields)
+searchConversations({
   emailDomain: "company.com",
   contentTerms: ["integration", "API"],
   status: "active"
@@ -334,6 +345,22 @@ updateDocsArticle({
 })
 ```
 
+### Summarizing Tickets with Transcripts
+```javascript
+// Single call: get latest tickets with full message transcripts
+searchConversations({
+  includeTranscripts: true,
+  limit: 10
+})
+
+// Search with transcripts for AI analysis
+searchConversations({
+  searchTerms: ["billing", "refund"],
+  includeTranscripts: true,
+  transcriptMaxMessages: 5
+})
+```
+
 ### Reports Examples
 ```javascript
 // Get email conversation report with comparison
@@ -372,23 +399,89 @@ getCompanyReport({
 })
 ```
 
+## Response Modes
+
+The server provides three response modes to optimize token usage and support different use cases.
+
+### Slim (default)
+
+Every conversation and thread is stripped to just the fields that matter: id, number, subject, status, preview, assignee, customer, tags, and dates. All Help Scout API cruft (`_links`, `_embedded`, `closedByUser`, source metadata, tag styles, photo URLs, etc.) is removed automatically.
+
+### Verbose (`verbose: true`)
+
+Returns the full, raw Help Scout API response objects. Useful for debugging or when you need a specific field that slim mode strips out. Available on every tool via a single boolean flag.
+
+### Transcript
+
+Purpose-built for AI analysis and summarization. Available in two ways:
+
+- **Single conversation**: `getThreads` with `format: "transcript"`
+- **Batch with search**: `searchConversations` with `includeTranscripts: true`
+
+Transcripts:
+- Include only customer/staff messages (strips internal notes, line items, system events, draft AI replies)
+- Sort chronologically (oldest first, natural reading order)
+- Strip all HTML to plain text
+- Clean up Help Scout Beacon form HTML (extracts the actual message from form markup)
+- Respect the `REDACT_MESSAGE_CONTENT` privacy setting
+- Cap message count per conversation (`transcriptMaxMessages`, default 10)
+
+#### Inline Transcripts on Search
+
+Before `includeTranscripts`, summarizing 10 tickets required 11 API calls (1 search + 10 thread fetches). Now it's a single call:
+
+```javascript
+searchConversations({ includeTranscripts: true })
+```
+
+Returns conversations with inline transcript arrays:
+
+```json
+{
+  "results": [
+    {
+      "id": 71406,
+      "subject": "GravityView activation error",
+      "status": "closed",
+      "customer": { "first": "Robert" },
+      "transcript": [
+        { "role": "customer", "from": "Robert", "date": "...", "body": "PHP Fatal error: ..." },
+        { "role": "staff", "from": "Rafael", "date": "...", "body": "Looks like a corrupted install..." }
+      ]
+    }
+  ],
+  "includeTranscripts": true,
+  "transcriptMaxMessages": 10
+}
+```
+
+**Design notes:**
+- When `includeTranscripts` is true and no limit is specified, defaults to 10 conversations (not 50)
+- Thread requests fire concurrently via `Promise.allSettled` — one failed transcript doesn't break the response
+- If a transcript fetch fails, the conversation still appears with `transcript: null` and a `transcriptError` field
+- The transcript format is identical whether fetched via `getThreads` or `searchConversations`
+
 ## Configuration Options
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `HELPSCOUT_CLIENT_ID` | OAuth2 Client ID from Help Scout My Apps | Required |
-| `HELPSCOUT_CLIENT_SECRET` | OAuth2 Client Secret from Help Scout My Apps | Required |
-| `HELPSCOUT_API_KEY` | Personal Access Token (format: `Bearer token`) | Alternative to OAuth2 |
+| **Authentication** | | |
+| `HELPSCOUT_APP_ID` | OAuth2 App ID from Help Scout My Apps | Required |
+| `HELPSCOUT_APP_SECRET` | OAuth2 App Secret from Help Scout My Apps | Required |
+| **Core** | | |
 | `HELPSCOUT_BASE_URL` | Help Scout API endpoint | `https://api.helpscout.net/v2/` |
-| `ALLOW_PII` | Include message content in responses | `false` |
+| `HELPSCOUT_DEFAULT_INBOX_ID` | Default inbox ID for scoped searches | Optional |
+| `REDACT_MESSAGE_CONTENT` | Set `true` to hide message bodies in responses | `false` (content shown) |
+| `HELPSCOUT_VERBOSE_RESPONSES` | Set `true` to return full API objects by default | `false` (slim mode) |
 | `CACHE_TTL_SECONDS` | Cache duration for API responses | `300` |
 | `LOG_LEVEL` | Logging verbosity (`error`, `warn`, `info`, `debug`) | `info` |
+| **Docs** | | |
 | `HELPSCOUT_DOCS_API_KEY` | API key for Help Scout Docs access | Required for Docs |
 | `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint | `https://docsapi.helpscout.net/v1/` |
 | `HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID` | Default collection ID for queries | Optional |
 | `HELPSCOUT_DEFAULT_DOCS_SITE_ID` | Default Docs site ID for queries | Optional |
 | `HELPSCOUT_ALLOW_DOCS_DELETE` | Enable Docs deletion operations | `false` |
-
+| `HELPSCOUT_DISABLE_DOCS` | Set `true` to hide all Docs tools and resources | `false` |
 
 ## Smart Site & Collection Resolution
 
@@ -448,20 +541,14 @@ export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
 
 ## Security & Privacy
 
-- **🔒 PII Protection**: Message content redacted by default
-- **🛡️ Secure Authentication**: OAuth2 Client Credentials or Personal Access Token with automatic refresh
+- **🔒 PII Protection**: Optional message content redaction via `REDACT_MESSAGE_CONTENT`
+- **🛡️ Secure Authentication**: OAuth2 Client Credentials with automatic token refresh
 - **📝 Audit Logging**: Comprehensive request tracking and error logging
 - **⚡ Rate Limiting**: Built-in retry logic with exponential backoff
-- **🏢 Enterprise Ready**: SOC2 compliant deployment options
 
 ## Changelog
 
-### v1.3.0 (2025-08-01)
-- Fixed Reports API response unwrapping for `getCompanyReport`, `getEmailReport`, `getChatReport`, `getPhoneReport`, `getUserReport`
-- Fixed `getHappinessReport` endpoint URL to use `/v2/reports/happiness/overall`
-- Fixed `listDocsSites` response structure to properly handle sites array
-- Added Reports API client for proper response handling
-- Improved error messages for Reports API endpoints
+See [GitHub Releases](https://github.com/zackkatz/help-scout-mcp-server/releases) for version history and release notes.
 
 ## Development
 
@@ -472,8 +559,8 @@ cd help-scout-mcp-server
 npm install && npm run build
 
 # Create .env file with your credentials (OAuth2)
-echo "HELPSCOUT_CLIENT_ID=your-client-id" > .env
-echo "HELPSCOUT_CLIENT_SECRET=your-client-secret" >> .env
+echo "HELPSCOUT_APP_ID=your-app-id" > .env
+echo "HELPSCOUT_APP_SECRET=your-app-secret" >> .env
 
 # Start the server
 npm start
@@ -486,12 +573,12 @@ npm start
 **Authentication Failed**
 ```bash
 # Verify your credentials
-echo $HELPSCOUT_CLIENT_ID
-echo $HELPSCOUT_CLIENT_SECRET
+echo $HELPSCOUT_APP_ID
+echo $HELPSCOUT_APP_SECRET
 
 # Test with curl
 curl -X POST https://api.helpscout.net/v2/oauth2/token \
-  -d "grant_type=client_credentials&client_id=$HELPSCOUT_CLIENT_ID&client_secret=$HELPSCOUT_CLIENT_SECRET"
+  -d "grant_type=client_credentials&client_id=$HELPSCOUT_APP_ID&client_secret=$HELPSCOUT_APP_SECRET"
 ```
 
 **Connection Timeouts**
@@ -505,8 +592,8 @@ curl -X POST https://api.helpscout.net/v2/oauth2/token \
 - Monitor logs for retry patterns
 
 **Empty Search Results**
-- **Wrong tool choice**: Use `searchConversations` (no query) for listing, `comprehensiveConversationSearch` for content search
-- **Empty search terms**: Don't use empty strings `[""]` with comprehensiveConversationSearch
+- Use `searchConversations` without `searchTerms` for listing, with `searchTerms` for keyword search
+- Don't use empty strings `[""]` in `searchTerms`
 - Verify inbox permissions with your API credentials
 - Check conversation exists and you have access
 - Try broader search terms or different time ranges
@@ -535,12 +622,6 @@ If you're getting "Unknown URL" errors when accessing reports:
 ```bash
 # Enable debug logging to see actual API responses
 LOG_LEVEL=debug npx help-scout-mcp-server
-```
-
-**5. Test with Personal Access Token**
-Sometimes OAuth apps have permission issues. Test with a Personal Access Token:
-```bash
-HELPSCOUT_API_KEY="Bearer your-personal-token" npx help-scout-mcp-server
 ```
 
 ### Debug Mode
@@ -602,7 +683,7 @@ npm run dev
 When reporting bugs, please include:
 - Help Scout MCP Server version
 - Node.js version
-- Authentication method (OAuth2/Personal Access Token)
+- Authentication method used
 - Error messages and logs
 - Steps to reproduce
 
