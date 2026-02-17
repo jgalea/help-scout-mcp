@@ -55,7 +55,7 @@ describe('MCPB Extension Validation', () => {
     });
 
     it('should have core MCP tools declared', () => {
-      expect(manifest.tools).toHaveLength(7);
+      expect(manifest.tools).toHaveLength(11);
 
       const expectedTools = [
         'searchConversations',
@@ -65,6 +65,10 @@ describe('MCPB Extension Validation', () => {
         'searchInboxes',
         'listAllInboxes',
         'getServerTime',
+        'createReply',
+        'getConversation',
+        'createConversation',
+        'updateConversation',
       ];
 
       const toolNames = manifest.tools.map((tool: any) => tool.name);

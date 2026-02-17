@@ -39,6 +39,12 @@ export class HelpScoutAPIConstraints {
         return this.validateGetThreads(args);
       case 'createReply':
         return this.validateCreateReply(args);
+      case 'getConversation':
+        return this.validateGetConversation(args);
+      case 'createConversation':
+        return this.validateCreateConversation(args);
+      case 'updateConversation':
+        return this.validateUpdateConversation(args);
       default:
         return { isValid: true, errors: [], suggestions: [] };
     }
@@ -169,6 +175,78 @@ export class HelpScoutAPIConstraints {
   }
 
   /**
+   * Validate getConversation calls
+   */
+  private static validateGetConversation(args: Record<string, unknown>): ValidationResult {
+    const errors: string[] = [];
+    const suggestions: string[] = [];
+
+    if (!args.conversationId || typeof args.conversationId !== 'string') {
+      errors.push('conversationId is required');
+      suggestions.push('Get conversation ID from searchConversations results');
+    } else if (!/^\d+$/.test(args.conversationId)) {
+      errors.push('Invalid conversation ID format');
+      suggestions.push('Conversation IDs should be numeric strings');
+    }
+
+    return { isValid: errors.length === 0, errors, suggestions };
+  }
+
+  /**
+   * Validate createConversation calls
+   */
+  private static validateCreateConversation(args: Record<string, unknown>): ValidationResult {
+    const errors: string[] = [];
+    const suggestions: string[] = [];
+
+    if (!args.subject || typeof args.subject !== 'string') {
+      errors.push('subject is required');
+    }
+    if (!args.type || !['email', 'phone', 'chat'].includes(args.type as string)) {
+      errors.push('type is required (email, phone, or chat)');
+    }
+    if (!args.mailboxId || typeof args.mailboxId !== 'number') {
+      errors.push('mailboxId is required');
+      suggestions.push('Use searchInboxes or listAllInboxes to find the correct mailbox ID');
+    }
+    if (!args.customer) {
+      errors.push('customer is required');
+      suggestions.push('Provide customer as { id: number } or { email: string }');
+    }
+    if (!args.threads || !Array.isArray(args.threads) || args.threads.length === 0) {
+      errors.push('At least one thread is required');
+      suggestions.push('Provide threads: [{ type: "customer", text: "message content" }]');
+    }
+
+    return { isValid: errors.length === 0, errors, suggestions };
+  }
+
+  /**
+   * Validate updateConversation calls
+   */
+  private static validateUpdateConversation(args: Record<string, unknown>): ValidationResult {
+    const errors: string[] = [];
+    const suggestions: string[] = [];
+
+    if (!args.conversationId || typeof args.conversationId !== 'string') {
+      errors.push('conversationId is required');
+      suggestions.push('Get conversation ID from searchConversations results');
+    } else if (!/^\d+$/.test(args.conversationId)) {
+      errors.push('Invalid conversation ID format');
+      suggestions.push('Conversation IDs should be numeric strings');
+    }
+
+    const hasUpdate = args.subject !== undefined || args.status !== undefined ||
+      args.assignTo !== undefined || args.tags !== undefined || args.customFields !== undefined;
+    if (!hasUpdate) {
+      errors.push('At least one field to update is required');
+      suggestions.push('Provide subject, status, assignTo, tags, or customFields');
+    }
+
+    return { isValid: errors.length === 0, errors, suggestions };
+  }
+
+  /**
    * Detect if user query mentions an inbox by name
    */
   private static detectInboxMention(userQuery: string): boolean {
@@ -211,6 +289,19 @@ export class HelpScoutAPIConstraints {
       }
     }
     
+    if (toolName === 'createConversation') {
+      if (result?.success) {
+        guidance.push(`✅ Conversation created (ID: ${result.conversationId})`);
+        guidance.push('💡 NEXT STEPS: Use getConversation, createReply, or updateConversation for follow-up');
+      }
+    }
+
+    if (toolName === 'updateConversation') {
+      if (result?.success) {
+        guidance.push(`✅ Conversation updated: ${(result.updated || []).join(', ')}`);
+      }
+    }
+
     if (toolName === 'searchConversations') {
       // For keyword search mode, totalConversationsFound is the actual count
       // resultsByStatus is an array of status objects, not conversations
