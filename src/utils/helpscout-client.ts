@@ -450,6 +450,30 @@ export class HelpScoutClient {
     };
   }
 
+  async patch(endpoint: string, data?: unknown): Promise<{ status: number; headers: Record<string, string> }> {
+    const response = await this.executeWithRetry(() =>
+      this.client.patch(endpoint, data, {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return {
+      status: response.status,
+      headers: response.headers as Record<string, string>,
+    };
+  }
+
+  async put(endpoint: string, data?: unknown): Promise<{ status: number; headers: Record<string, string> }> {
+    const response = await this.executeWithRetry(() =>
+      this.client.put(endpoint, data, {
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return {
+      status: response.status,
+      headers: response.headers as Record<string, string>,
+    };
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       await this.get('/mailboxes', { page: 1, size: 1 });

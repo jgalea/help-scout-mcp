@@ -347,6 +347,69 @@ export const CreateReplyInputSchema = z.object({
 
 export type CreateReplyInput = z.infer<typeof CreateReplyInputSchema>;
 
+// Get Conversation Schema
+export const GetConversationInputSchema = z.object({
+  conversationId: z.string(),
+  embed: z.array(z.enum(['threads'])).optional(),
+});
+
+export type GetConversationInput = z.infer<typeof GetConversationInputSchema>;
+
+// Create Conversation Schema
+export const CreateConversationInputSchema = z.object({
+  subject: z.string(),
+  type: z.enum(['email', 'phone', 'chat']),
+  mailboxId: z.number(),
+  customer: z.union([
+    z.object({ id: z.number() }),
+    z.object({
+      email: z.string().email(),
+      firstName: z.string().optional(),
+      lastName: z.string().optional(),
+    }),
+  ]),
+  threads: z.array(z.object({
+    type: z.enum(['customer', 'note', 'message']),
+    text: z.string(),
+    customer: z.union([
+      z.object({ id: z.number() }),
+      z.object({
+        email: z.string().email(),
+        firstName: z.string().optional(),
+        lastName: z.string().optional(),
+      }),
+    ]).optional(),
+    draft: z.boolean().optional(),
+  })).min(1),
+  status: z.enum(['active', 'pending', 'closed']).default('active'),
+  assignTo: z.number().optional(),
+  tags: z.array(z.string()).optional(),
+  imported: z.boolean().optional(),
+  autoReply: z.boolean().optional(),
+  user: z.number().optional(),
+  createdAt: z.string().optional(),
+});
+
+export type CreateConversationInput = z.infer<typeof CreateConversationInputSchema>;
+
+// Update Conversation Schema
+export const UpdateConversationInputSchema = z.object({
+  conversationId: z.string(),
+  subject: z.string().optional(),
+  status: z.enum(['active', 'pending', 'closed', 'spam']).optional(),
+  assignTo: z.union([z.number(), z.null()]).optional(),
+  tags: z.array(z.string()).optional(),
+  customFields: z.array(z.object({
+    id: z.number(),
+    value: z.string(),
+  })).optional(),
+}).refine(
+  (data) => !!(data.subject !== undefined || data.status !== undefined || data.assignTo !== undefined || data.tags !== undefined || data.customFields !== undefined),
+  { message: 'At least one field to update must be provided (subject, status, assignTo, tags, or customFields).' }
+);
+
+export type UpdateConversationInput = z.infer<typeof UpdateConversationInputSchema>;
+
 // Type exports
 export type DocsSite = z.infer<typeof DocsSiteSchema>;
 export type DocsCollection = z.infer<typeof DocsCollectionSchema>;
