@@ -166,6 +166,7 @@ npx @gravitykit/help-scout-mcp
 ## Features
 
 - **🔍 Advanced Search**: Multi-status conversation search, content filtering, boolean queries
+- **💬 Reply Creation**: Draft or published replies with HTML formatting optimized for Help Scout
 - **📊 Smart Analysis**: Conversation summaries, thread retrieval, inbox monitoring
 - **📚 Docs Integration**: Full Help Scout Docs API support for articles, collections, and categories
 - **📈 Comprehensive Reports**: All Help Scout Reports API endpoints - chat, email, phone, user, company, happiness, and docs analytics
@@ -185,6 +186,10 @@ npx @gravitykit/help-scout-mcp
 | `getThreads` | Full message history with optional `transcript` format | Full context analysis |
 | `searchInboxes` | Find inboxes by name (deprecated: IDs in server instructions) | Discovering available inboxes |
 | `listAllInboxes` | List all inboxes with IDs (deprecated: IDs in server instructions) | Refreshing inbox list mid-session |
+| `createReply` | Create a draft or published reply on a conversation | Replying to customers |
+| `getConversation` | Get a conversation by ID with optional embedded threads | Direct conversation lookup |
+| `createConversation` | Create a new conversation with subject, customer, and initial message | Starting new tickets |
+| `updateConversation` | Update a conversation's status, assignee, tags, or subject | Triaging and managing tickets |
 | `getServerTime` | Current server timestamp | Time-relative searches |
 
 ### Documentation Tools
@@ -334,6 +339,67 @@ updateDocsArticle({
   articleId: "789012",
   name: "Updated Article Title",
   text: "<p>New article content</p>"
+})
+```
+
+### Creating Replies
+```javascript
+// Create a draft reply (default, safe)
+createReply({
+  conversationId: "98234",
+  text: "<p>Thanks for reaching out! Let me look into this.</p>",
+  customer: { email: "maria@example.com" }
+})
+
+// Create a published reply (requires HELPSCOUT_ALLOW_SEND_REPLY=true)
+createReply({
+  conversationId: "98234",
+  text: "<p>Your export issue has been resolved.</p>",
+  customer: { id: 67890 },
+  draft: false,
+  status: "closed"
+})
+```
+
+HTML in replies is automatically formatted for Help Scout's native editor:
+- `<p>` tags converted to `<br><br>` line breaks
+- `<pre>` blocks converted to `<div>` (Help Scout strips `<pre>`)
+- `<code>` tags get `class="inline-code"` for styling
+- Block element spacing controlled by `HELPSCOUT_REPLY_SPACING`
+
+### Managing Conversations
+```javascript
+// Get a conversation by ID
+getConversation({
+  conversationId: "98234"
+})
+
+// Get a conversation with embedded threads
+getConversation({
+  conversationId: "98234",
+  embed: ["threads"]
+})
+
+// Create a new conversation
+createConversation({
+  subject: "New support request",
+  type: "email",
+  mailboxId: 256809,
+  customer: { email: "maria@example.com" },
+  threads: [{ type: "customer", text: "I need help with my account." }]
+})
+
+// Update a conversation's status and tags
+updateConversation({
+  conversationId: "98234",
+  status: "pending",
+  tags: ["billing", "priority"]
+})
+
+// Reassign a conversation
+updateConversation({
+  conversationId: "98234",
+  assignTo: 12345
 })
 ```
 
@@ -515,6 +581,9 @@ Returns conversations with inline transcript arrays:
 | `HELPSCOUT_VERBOSE_RESPONSES` | Set `true` to return full API objects by default | `false` (slim mode) |
 | `CACHE_TTL_SECONDS` | Cache duration for API responses | `300` |
 | `LOG_LEVEL` | Logging verbosity (`error`, `warn`, `info`, `debug`) | `info` |
+| **Replies** | | |
+| `HELPSCOUT_REPLY_SPACING` | Paragraph spacing around block elements in replies: `relaxed` (extra breathing room) or `compact` (tighter spacing) | `relaxed` |
+| `HELPSCOUT_ALLOW_SEND_REPLY` | Set `true` to allow sending published (non-draft) replies. When `false`, only drafts can be created. | `false` |
 | **Docs** | | |
 | `HELPSCOUT_DOCS_API_KEY` | API key for Help Scout Docs access | Required for Docs |
 | `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint | `https://docsapi.helpscout.net/v1/` |
