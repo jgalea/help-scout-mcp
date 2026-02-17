@@ -16,6 +16,8 @@ jest.mock('../utils/config.js', () => ({
       get defaultDocsCollectionId() { return process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || ''; },
       get defaultDocsSiteId() { return process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || ''; },
       get disableDocs() { return process.env.HELPSCOUT_DISABLE_DOCS === 'true'; },
+      get replySpacing() { return process.env.HELPSCOUT_REPLY_SPACING === 'compact' ? 'compact' : 'relaxed'; },
+      get allowSendReply() { return process.env.HELPSCOUT_ALLOW_SEND_REPLY === 'true'; },
     },
     cache: { ttlSeconds: 300, maxSize: 10000 },
     logging: { level: 'info' },
@@ -1489,6 +1491,349 @@ describe('ToolHandler', () => {
       expect(response.pagination).toBeDefined();
       expect(response.pagination.returned).toBe(0);
       expect(response.pagination.totalAvailable).toBe(0);
+    });
+  });
+
+  describe('createReply', () => {
+    it('should list createReply in available tools', async () => {
+      const tools = await toolHandler.listTools();
+      const toolNames = tools.map(t => t.name);
+      expect(toolNames).toContain('createReply');
+    });
+
+    it('should create a draft reply successfully', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply')
+        .reply(201, '', { 'resource-id': '99999' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Thanks for reaching out!</p>',
+            customer: { id: 789 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.conversationId).toBe('12345');
+      expect(response.threadId).toBe('99999');
+      expect(response.draft).toBe(true);
+      expect(response.message).toContain('Draft');
+    });
+
+    it('should default to draft when draft is not specified', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => body.draft === true)
+        .reply(201, '', { 'resource-id': '99999' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Test</p>',
+            customer: { email: 'test@example.com' },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.draft).toBe(true);
+    });
+
+    it('should block published replies when HELPSCOUT_ALLOW_SEND_REPLY is not set', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Test</p>',
+            customer: { id: 789 },
+            draft: false,
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('Published replies are disabled');
+    });
+
+    it('should allow published replies when HELPSCOUT_ALLOW_SEND_REPLY=true', async () => {
+      process.env.HELPSCOUT_ALLOW_SEND_REPLY = 'true';
+
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => body.draft === false)
+        .reply(201, '', { 'resource-id': '88888' });
+
+      // Need a fresh handler to pick up the env change via mock getters
+      const freshHandler = new ToolHandler();
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Sent reply</p>',
+            customer: { id: 789 },
+            draft: false,
+          }
+        }
+      };
+
+      const result = await freshHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.draft).toBe(false);
+      expect(response.message).toContain('sent successfully');
+
+      delete process.env.HELPSCOUT_ALLOW_SEND_REPLY;
+    });
+
+    it('should pass optional fields (cc, bcc, status, user, assignTo)', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => {
+          return body.cc?.length === 1 &&
+            body.bcc?.length === 1 &&
+            body.status === 'closed' &&
+            body.user === 42 &&
+            body.assignTo === 99;
+        })
+        .reply(201, '', { 'resource-id': '77777' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Closing this out.</p>',
+            customer: { id: 789 },
+            cc: ['manager@example.com'],
+            bcc: ['archive@example.com'],
+            status: 'closed',
+            user: 42,
+            assignTo: 99,
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+    });
+
+    it('should validate conversationId format via API constraints', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: 'invalid-id',
+            text: '<p>Test</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.errors).toContain('Invalid conversation ID format');
+    });
+
+    it('should validate missing required fields via API constraints', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            // missing text and customer
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.errors).toContain('text is required');
+      expect(response.details.errors).toContain('customer is required');
+    });
+  });
+
+  describe('formatReplyHtml (via createReply)', () => {
+    // We test formatReplyHtml indirectly by checking the text sent in the POST body
+
+    it('should convert <p> tags to <br><br>', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Hello<br><br>World';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Hello</p><p>World</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should add inline-code class to bare <code> tags', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text.includes('<code class="inline-code">') &&
+                 body.text.includes('<code class="existing">');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Code: <code>test</code> and <code class="existing">keep</code></p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should convert <pre><code> to <div> with <br> for newlines', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // <pre><code>line1\nline2</code></pre> → <div>line1<br>line2</div>
+          return body.text.includes('<div>line1<br>line2</div>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<pre><code>line1\nline2</code></pre>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should strip breaks before lists and add break after in relaxed mode', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // No breaks before <ul>, single <br> after </ul>
+          return body.text.includes('Before<ul>') && body.text.includes('</ul><br>After');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><ul><li>Item</li></ul><p>After</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should add double break before blockquotes in relaxed mode', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text.includes('<br><br><blockquote>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><blockquote>Quoted</blockquote>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should strip all extra breaks in compact mode', async () => {
+      process.env.HELPSCOUT_REPLY_SPACING = 'compact';
+
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // Compact: no breaks before blockquote, no breaks after blocks
+          return !body.text.includes('<br><blockquote>') &&
+                 !body.text.includes('</ul><br>') &&
+                 !body.text.includes('</blockquote><br>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const freshHandler = new ToolHandler();
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><ul><li>Item</li></ul><p>Middle</p><blockquote>Quoted</blockquote><p>After</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await freshHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      delete process.env.HELPSCOUT_REPLY_SPACING;
     });
   });
 });
