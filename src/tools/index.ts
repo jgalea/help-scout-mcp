@@ -56,6 +56,7 @@ import {
   GetThreadsInputSchema,
   GetConversationSummaryInputSchema,
   StructuredConversationFilterInputSchema,
+  CreateReplyInputSchema,
 } from '../schema/types.js';
 
 /**
@@ -522,6 +523,57 @@ export class ToolHandler {
           },
         },
       },
+      {
+        name: 'createReply',
+        description: 'Create a reply on a conversation. Creates draft replies by default (safe). Set draft:false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true). HTML is auto-formatted for Help Scout.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID to reply to',
+            },
+            text: {
+              type: 'string',
+              description: 'Reply body (HTML). Auto-formatted: <p> → <br><br>, <pre> → <div>, inline <code> gets class="inline-code".',
+            },
+            customer: {
+              description: 'Customer receiving the reply. Provide either { id } or { email, firstName?, lastName? }.',
+              oneOf: [
+                {
+                  type: 'object',
+                  properties: { id: { type: 'number' } },
+                  required: ['id'],
+                },
+                {
+                  type: 'object',
+                  properties: {
+                    email: { type: 'string', format: 'email' },
+                    firstName: { type: 'string' },
+                    lastName: { type: 'string' },
+                  },
+                  required: ['email'],
+                },
+              ],
+            },
+            draft: {
+              type: 'boolean',
+              description: 'Create as draft (default: true). Set false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true).',
+              default: true,
+            },
+            user: { type: 'number', description: 'User ID of the replying agent' },
+            assignTo: { type: 'number', description: 'User ID to assign the conversation to' },
+            status: {
+              type: 'string',
+              enum: ['active', 'closed', 'open', 'pending', 'spam'],
+              description: 'Set conversation status after reply',
+            },
+            cc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'CC email addresses' },
+            bcc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'BCC email addresses' },
+          },
+          required: ['conversationId', 'text', 'customer'],
+        },
+      },
     ];
 
     // Get Docs tools from the Docs handler (unless disabled via HELPSCOUT_DISABLE_DOCS=true)
@@ -624,6 +676,9 @@ export class ToolHandler {
             break;
           case 'structuredConversationFilter':
             result = await this.structuredConversationFilter(request.params.arguments || {});
+            break;
+          case 'createReply':
+            result = await this.createReply(request.params.arguments || {});
             break;
           default:
             throw new Error(`Unknown tool: ${request.params.name}`);
@@ -1584,6 +1639,106 @@ export class ToolHandler {
           results: isVerbose(args) ? conversations : conversations.map(c => this.slimConversation(c)),
           pagination: { returned: conversations.length, total: totalElements },
           ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Convert HTML to Help Scout's native format.
+   *
+   * Help Scout renders replies as text with `<br><br>` between paragraphs,
+   * not `<p>` tags. Block elements (ul, ol, blockquote) have built-in CSS
+   * margins, so breaks around them are tuned to avoid double-spacing.
+   *
+   * Relaxed (default): `<br>` after blocks, `<br><br>` before blockquotes.
+   * Compact: no extra breaks around blocks.
+   */
+  private formatReplyHtml(html: string, compact: boolean): string {
+    let result = html;
+
+    // Convert <pre> to <div> (Help Scout strips <pre> tags)
+    result = result.replace(/<pre[^>]*>(?:\s*<code[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>/gi,
+      (_match, content: string) => `<div>${content.replace(/\n/g, '<br>')}</div>`);
+
+    // Add inline-code class to bare <code> tags (not inside <div> code blocks, already converted)
+    result = result.replace(/<code(?![^>]*\bclass\b)([^>]*)>/gi, '<code class="inline-code"$1>');
+
+    // Convert paragraphs to line breaks
+    result = result.replace(/<p[^>]*>/gi, '');
+    result = result.replace(/<\/p>/gi, '<br><br>');
+
+    // Normalize spacing around block elements
+    const blocks = 'ul|ol|blockquote|div';
+    result = result.replace(new RegExp(`(<br>)+\\s*(<(ul|ol|div)[^>]*>)`, 'gi'), '$2');
+    if (compact) {
+      result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '$2');
+      result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1');
+    } else {
+      result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '<br><br>$2');
+      result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1<br>');
+    }
+
+    // Trim trailing breaks
+    result = result.replace(/(<br>)+$/i, '');
+
+    return result;
+  }
+
+  /**
+   * Create a reply on a conversation (draft by default)
+   */
+  private async createReply(args: unknown): Promise<CallToolResult> {
+    const input = CreateReplyInputSchema.parse(args);
+
+    const isDraft = input.draft !== false; // default true
+
+    // Block published replies unless env var is set
+    if (!isDraft && !config.helpscout.allowSendReply) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Published replies are disabled',
+            message: 'Sending non-draft replies requires HELPSCOUT_ALLOW_SEND_REPLY=true in the environment. This is a safety measure to prevent accidental sends. Draft replies are always allowed.',
+            suggestion: 'Either set draft=true (default) to create a draft, or set the HELPSCOUT_ALLOW_SEND_REPLY=true environment variable to enable sending.',
+          }, null, 2),
+        }],
+      };
+    }
+
+    const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+
+    const requestBody: Record<string, unknown> = {
+      text,
+      customer: input.customer,
+      draft: isDraft,
+    };
+
+    if (input.user !== undefined) requestBody.user = input.user;
+    if (input.assignTo !== undefined) requestBody.assignTo = input.assignTo;
+    if (input.status !== undefined) requestBody.status = input.status;
+    if (input.cc !== undefined) requestBody.cc = input.cc;
+    if (input.bcc !== undefined) requestBody.bcc = input.bcc;
+
+    const response = await helpScoutClient.postWithResponse(
+      `/conversations/${input.conversationId}/reply`,
+      requestBody
+    );
+
+    const threadId = response.headers['resource-id'] || null;
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          threadId,
+          draft: isDraft,
+          message: isDraft
+            ? 'Draft reply created successfully. It can be reviewed and sent from Help Scout.'
+            : 'Reply sent successfully.',
         }),
       }],
     };

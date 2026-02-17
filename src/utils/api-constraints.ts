@@ -37,6 +37,8 @@ export class HelpScoutAPIConstraints {
         return this.validateConversationSummary(args);
       case 'getThreads':
         return this.validateGetThreads(args);
+      case 'createReply':
+        return this.validateCreateReply(args);
       default:
         return { isValid: true, errors: [], suggestions: [] };
     }
@@ -138,6 +140,34 @@ export class HelpScoutAPIConstraints {
     return { isValid: errors.length === 0, errors, suggestions };
   }
   
+  /**
+   * Validate createReply calls
+   */
+  private static validateCreateReply(args: Record<string, unknown>): ValidationResult {
+    const errors: string[] = [];
+    const suggestions: string[] = [];
+
+    if (!args.conversationId || typeof args.conversationId !== 'string') {
+      errors.push('conversationId is required');
+      suggestions.push('Get conversation ID from searchConversations results first');
+    } else if (!/^\d+$/.test(args.conversationId)) {
+      errors.push('Invalid conversation ID format');
+      suggestions.push('Conversation IDs should be numeric strings');
+    }
+
+    if (!args.text || typeof args.text !== 'string') {
+      errors.push('text is required');
+      suggestions.push('Provide HTML text for the reply body');
+    }
+
+    if (!args.customer) {
+      errors.push('customer is required');
+      suggestions.push('Provide customer as { id: number } or { email: string }');
+    }
+
+    return { isValid: errors.length === 0, errors, suggestions };
+  }
+
   /**
    * Detect if user query mentions an inbox by name
    */
