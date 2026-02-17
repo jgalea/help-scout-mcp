@@ -436,6 +436,20 @@ export class HelpScoutClient {
     return 300; // Default 5 minutes
   }
 
+  async postWithResponse<T>(endpoint: string, data?: unknown, params?: Record<string, unknown>): Promise<{ status: number; headers: Record<string, string>; data: T }> {
+    const response = await this.executeWithRetry<T>(() =>
+      this.client.post<T>(endpoint, data, {
+        params,
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return {
+      status: response.status,
+      headers: response.headers as Record<string, string>,
+      data: response.data,
+    };
+  }
+
   async testConnection(): Promise<boolean> {
     try {
       await this.get('/mailboxes', { page: 1, size: 1 });

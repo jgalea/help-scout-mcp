@@ -325,6 +325,28 @@ export const UpdateDocsCategoryInputSchema = z.object({
   order: z.number().optional(),
 });
 
+// Reply Input Schema
+export const CreateReplyInputSchema = z.object({
+  conversationId: z.string(),
+  text: z.string(),
+  customer: z.union([
+    z.object({ id: z.number() }),
+    z.object({
+      email: z.string().email(),
+      firstName: z.string().optional(),
+      lastName: z.string().optional(),
+    }),
+  ]),
+  draft: z.boolean().default(true),
+  user: z.number().optional(),
+  assignTo: z.number().optional(),
+  status: z.enum(['active', 'closed', 'open', 'pending', 'spam']).optional(),
+  cc: z.array(z.string().email()).optional(),
+  bcc: z.array(z.string().email()).optional(),
+});
+
+export type CreateReplyInput = z.infer<typeof CreateReplyInputSchema>;
+
 // Type exports
 export type DocsSite = z.infer<typeof DocsSiteSchema>;
 export type DocsCollection = z.infer<typeof DocsCollectionSchema>;

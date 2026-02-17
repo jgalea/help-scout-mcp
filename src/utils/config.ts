@@ -18,6 +18,8 @@ export interface Config {
     defaultDocsCollectionId?: string;  // Default Docs collection ID for queries
     defaultDocsSiteId?: string;  // Default Docs site ID for queries
     disableDocs?: boolean;  // Set HELPSCOUT_DISABLE_DOCS=true to hide all Docs tools/resources
+    replySpacing?: 'compact' | 'relaxed';  // Paragraph spacing style for replies
+    allowSendReply?: boolean;  // Allow sending published (non-draft) replies
   };
   cache: {
     ttlSeconds: number;
@@ -55,6 +57,8 @@ export const config: Config = {
     defaultDocsCollectionId: process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || '',
     defaultDocsSiteId: process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || '',
     disableDocs: process.env.HELPSCOUT_DISABLE_DOCS === 'true',
+    replySpacing: (process.env.HELPSCOUT_REPLY_SPACING === 'compact' ? 'compact' : 'relaxed') as 'compact' | 'relaxed',
+    allowSendReply: process.env.HELPSCOUT_ALLOW_SEND_REPLY === 'true',
   },
   cache: {
     ttlSeconds: parseInt(process.env.CACHE_TTL_SECONDS || '300', 10),
