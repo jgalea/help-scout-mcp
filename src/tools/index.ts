@@ -1975,6 +1975,13 @@ export class ToolHandler {
     // Add inline-code class to bare <code> tags (not inside <div> code blocks, already converted)
     result = result.replace(/<code(?![^>]*\bclass\b)([^>]*)>/gi, '<code class="inline-code"$1>');
 
+    // Convert plain newlines to <br> (LLMs typically output \n, not HTML tags).
+    // Strip \n immediately after block-level closing tags (just formatting whitespace),
+    // then convert remaining \n to <br>. Double \n becomes a paragraph break.
+    result = result.replace(/(<\/(?:p|div|ul|ol|li|blockquote|h[1-6]|tr|table)>)\n/gi, '$1');
+    result = result.replace(/\n\n/g, '<br><br>');
+    result = result.replace(/\n/g, '<br>');
+
     // Convert paragraphs to line breaks
     result = result.replace(/<p[^>]*>/gi, '');
     result = result.replace(/<\/p>/gi, '<br><br>');

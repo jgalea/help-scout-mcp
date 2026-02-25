@@ -1835,6 +1835,101 @@ describe('ToolHandler', () => {
 
       delete process.env.HELPSCOUT_REPLY_SPACING;
     });
+
+    it('should convert plain \\n to <br>', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Hello<br>World';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Hello\nWorld',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should convert double \\n to <br><br> for paragraph breaks', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Paragraph one<br><br>Paragraph two';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Paragraph one\n\nParagraph two',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should not add extra <br> after block-level closing tags', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // \n after </ul> and </li> should be stripped, not become <br>
+          return !body.text.includes('</ul><br><br>After') &&
+                 !body.text.includes('</li><br>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Before<ul>\n<li>Item 1</li>\n<li>Item 2</li>\n</ul>\nAfter',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should handle mixed HTML and \\n content', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // <strong> is inline, so \n around it should become <br>
+          return body.text.includes('Hello<br><br><strong>Bold</strong><br>End');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Hello\n\n<strong>Bold</strong>\nEnd',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
   });
 
   describe('getConversation', () => {
