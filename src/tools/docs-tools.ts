@@ -742,11 +742,12 @@ export class DocsToolHandler extends Injectable {
         inputSchema: {
           type: 'object',
           properties: {
-            collectionId: { type: 'string', description: 'Collection ID for the asset' },
+            articleId: { type: 'string', description: 'Article ID to associate the asset with' },
             filePath: { type: 'string', description: 'Path to the file to upload' },
+            assetType: { type: 'string', enum: ['image', 'attachment'], default: 'image', description: 'Type of asset (image or attachment)' },
             fileName: { type: 'string', description: 'Name for the uploaded file' },
           },
-          required: ['collectionId', 'filePath'],
+          required: ['articleId', 'filePath'],
         },
       },
       {
@@ -757,10 +758,10 @@ export class DocsToolHandler extends Injectable {
           properties: {
             siteId: { type: 'string', description: 'Site ID for the asset' },
             filePath: { type: 'string', description: 'Path to the file to upload' },
-            assetType: { 
-              type: 'string', 
-              enum: ['logo', 'favicon', 'other'],
-              description: 'Type of settings asset' 
+            assetType: {
+              type: 'string',
+              enum: ['logo', 'favicon', 'touchicon'],
+              description: 'Type of settings asset'
             },
           },
           required: ['siteId', 'filePath', 'assetType'],
@@ -2759,32 +2760,31 @@ export class DocsToolHandler extends Injectable {
       categoryIds: z.array(z.string()).optional(),
       status: z.enum(['published', 'notpublished']).default('notpublished'),
     }).parse(args);
-    
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     try {
-      // Read the file content
-      const fs = await import('fs/promises');
-      const fileContent = await fs.readFile(input.filePath, 'utf-8');
-      
-      // Detect if it's markdown and convert to HTML if needed
-      let htmlContent = fileContent;
-      if (input.filePath.endsWith('.md') || input.filePath.endsWith('.markdown')) {
-        // Simple markdown to HTML conversion (in production, use a proper markdown parser)
-        htmlContent = `<p>${fileContent.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>')}</p>`;
+      const { createReadStream } = await import('fs');
+      const path = await import('path');
+      const { default: FormData } = await import('form-data');
+
+      const apiKey = await helpScoutDocsClient.getApiKey();
+      const ext = path.extname(input.filePath).toLowerCase();
+      const fileType = ext === '.md' || ext === '.markdown' ? 'markdown' : ext === '.html' || ext === '.htm' ? 'html' : 'text';
+
+      const formData = new FormData();
+      formData.append('key', apiKey);
+      formData.append('collectionId', input.collectionId);
+      formData.append('name', input.name);
+      formData.append('type', fileType);
+      formData.append('file', createReadStream(input.filePath), { filename: path.basename(input.filePath) });
+
+      if (input.categoryIds?.length) {
+        formData.append('categoryId', input.categoryIds[0]);
       }
-      
-      const articleData: any = {
-        collectionId: input.collectionId,
-        name: input.name,
-        text: htmlContent,
-        status: input.status,
-      };
-      
-      if (input.categoryIds) articleData.categories = input.categoryIds;
-      
-      const response = await helpScoutDocsClient.create<any>('/articles/upload', articleData);
-      
+
+      const response = await helpScoutDocsClient.postFormData<any>('/articles/upload?reload=true', formData);
+
       return {
         content: [
           {
@@ -2814,29 +2814,30 @@ export class DocsToolHandler extends Injectable {
   // Assets implementations
   private async createDocsArticleAsset(args: unknown): Promise<CallToolResult> {
     const input = z.object({
-      collectionId: z.string(),
+      articleId: z.string(),
       filePath: z.string(),
+      assetType: z.enum(['image', 'attachment']).default('image'),
       fileName: z.string().optional(),
     }).parse(args);
-    
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     try {
-      // Note: File upload requires multipart/form-data which may need special handling
-      const fs = await import('fs/promises');
+      const { createReadStream } = await import('fs');
       const path = await import('path');
-      
-      const fileBuffer = await fs.readFile(input.filePath);
+      const { default: FormData } = await import('form-data');
+
       const fileName = input.fileName || path.basename(input.filePath);
-      
-      // This is a simplified implementation - actual file upload would require FormData
-      const response = await helpScoutDocsClient.create<any>('/assets/article', {
-        collectionId: input.collectionId,
-        fileName: fileName,
-        // In a real implementation, this would be a file upload
-        fileData: fileBuffer.toString('base64'),
-      });
-      
+      const apiKey = await helpScoutDocsClient.getApiKey();
+
+      const formData = new FormData();
+      formData.append('key', apiKey);
+      formData.append('articleId', input.articleId);
+      formData.append('assetType', input.assetType);
+      formData.append('file', createReadStream(input.filePath), { filename: fileName });
+
+      const response = await helpScoutDocsClient.postFormData<any>('/assets/article', formData);
+
       return {
         content: [
           {
@@ -2867,25 +2868,26 @@ export class DocsToolHandler extends Injectable {
     const input = z.object({
       siteId: z.string(),
       filePath: z.string(),
-      assetType: z.enum(['logo', 'favicon', 'other']),
+      assetType: z.enum(['logo', 'favicon', 'touchicon']),
     }).parse(args);
-    
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     try {
-      const fs = await import('fs/promises');
+      const { createReadStream } = await import('fs');
       const path = await import('path');
-      
-      const fileBuffer = await fs.readFile(input.filePath);
+      const { default: FormData } = await import('form-data');
+
+      const apiKey = await helpScoutDocsClient.getApiKey();
       const fileName = path.basename(input.filePath);
-      
-      const response = await helpScoutDocsClient.create<any>('/assets/settings', {
-        siteId: input.siteId,
-        assetType: input.assetType,
-        fileName: fileName,
-        fileData: fileBuffer.toString('base64'),
-      });
-      
+
+      const formData = new FormData();
+      formData.append('key', apiKey);
+      formData.append('assetType', input.assetType);
+      formData.append('file', createReadStream(input.filePath), { filename: fileName });
+
+      const response = await helpScoutDocsClient.postFormData<any>('/assets/settings', formData);
+
       return {
         content: [
           {

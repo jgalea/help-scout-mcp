@@ -65,6 +65,7 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",
+    "form-data": "^4.0.5",
     "lru-cache": "^10.1.0",
     "zod": "^3.22.4"
   },
