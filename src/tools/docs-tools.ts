@@ -4,6 +4,17 @@ import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
 import { isVerbose } from '../utils/config.js';
 import { z } from 'zod';
+
+/**
+ * Strip CDATA wrapper from Help Scout Docs API responses.
+ * The API returns article text wrapped in <![CDATA[...]]> which is not
+ * part of the actual content and should be removed before returning to callers.
+ */
+function stripCdata(text: string | undefined): string | undefined {
+  if (!text) return text;
+  return text.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
+}
+
 import {
   DocsSite,
   DocsCollection,
@@ -1500,7 +1511,7 @@ export class DocsToolHandler extends Injectable {
           text: JSON.stringify({
             article: {
               ...article,
-              text: config.security.allowPii ? article.text : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
+              text: config.security.allowPii ? stripCdata(article.text) : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
             },
           }),
         }],
@@ -1521,7 +1532,7 @@ export class DocsToolHandler extends Injectable {
             categories: (article as any).categories,
             related: (article as any).related,
             viewCount: (article as any).viewCount,
-            text: config.security.allowPii ? article.text : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
+            text: config.security.allowPii ? stripCdata(article.text) : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
             createdAt: (article as any).createdAt,
             updatedAt: (article as any).updatedAt,
           },
@@ -2152,7 +2163,7 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              results: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, collectionId: a.collectionId, preview: a.preview || a.text?.substring(0, 200) })),
+              results: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, collectionId: a.collectionId, preview: a.preview || stripCdata(a.text)?.substring(0, 200) })),
               pagination: {
                 page: response.page,
                 pages: response.pages,
