@@ -183,7 +183,7 @@ npx @gravitykit/help-scout-mcp
 | `searchConversations` | Search by keywords, structured filters, or list by status/date/inbox. Supports `includeTranscripts` for inline message content. | Listing, keyword search, content search, summarization |
 | `structuredConversationFilter` | Lookup by ticket number, assignee, customer ID, or folder ID | Ticket lookup, assignee filtering |
 | `getConversationSummary` | First customer message + latest staff reply | Quick conversation overview |
-| `getThreads` | Full message history with optional `transcript` format | Full context analysis |
+| `getThreads` | Full message history with optional `transcript` format. Excludes AI drafts by default (`excludeDrafts: true`). | Full context analysis |
 | `searchInboxes` | Find inboxes by name (deprecated: IDs in server instructions) | Discovering available inboxes |
 | `listAllInboxes` | List all inboxes with IDs (deprecated: IDs in server instructions) | Refreshing inbox list mid-session |
 | `createReply` | Create a draft or published reply on a conversation | Replying to customers |
@@ -513,7 +513,8 @@ Purpose-built for AI analysis and summarization. Available in two ways:
 - **Batch with search**: `searchConversations` with `includeTranscripts: true`
 
 Transcripts:
-- Include only customer/staff messages (strips internal notes, line items, system events, draft AI replies)
+- Exclude AI-generated drafts (`source.type: "support-agent-ai"`) and unsent drafts (`state: "draft"`) by default. Set `excludeDrafts: false` on `getThreads` to include all threads.
+- Include only customer/staff messages (strips internal notes, line items, system events)
 - Sort chronologically (oldest first, natural reading order)
 - Strip all HTML to plain text
 - Clean up Help Scout Beacon form HTML (extracts the actual message from form markup)

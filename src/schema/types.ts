@@ -122,6 +122,7 @@ export const GetThreadsInputSchema = z.object({
   format: z.enum(['full', 'transcript']).default('full'),
   limit: z.number().min(1).max(200).default(200),
   cursor: z.string().optional(),
+  excludeDrafts: z.boolean().default(true),
 });
 
 export const GetConversationSummaryInputSchema = z.object({

@@ -476,6 +476,11 @@ export class ToolHandler {
               type: 'string',
               description: 'Pagination cursor for next page',
             },
+            excludeDrafts: {
+              type: 'boolean',
+              default: true,
+              description: 'Exclude AI-generated drafts (source.type "support-agent-ai") and unsent drafts (state "draft") from results. Default: true. Set false to include all threads.',
+            },
           },
           required: ['conversationId'],
         },
@@ -1470,8 +1475,10 @@ export class ToolHandler {
     const dialogueThreads = threads.filter(t => {
       const type = (t as any).type;
       const state = (t as any).state;
+      const sourceType = (t as any).source?.type;
       if (type !== 'customer' && type !== 'message') return false;
       if (state === 'draft') return false;
+      if (sourceType === 'support-agent-ai') return false;
       return true;
     });
 
@@ -1549,7 +1556,19 @@ export class ToolHandler {
       input.limit
     );
 
-    const threads = allThreads.slice(0, input.limit);
+    let threads = allThreads.slice(0, input.limit);
+
+    // Filter AI drafts and unsent drafts (default: on, set excludeDrafts:false to include)
+    const draftsExcluded = input.excludeDrafts !== false;
+    if (draftsExcluded) {
+      threads = threads.filter(t => {
+        const state = (t as any).state;
+        const sourceType = (t as any).source?.type;
+        if (state === 'draft') return false;
+        if (sourceType === 'support-agent-ai') return false;
+        return true;
+      });
+    }
 
     // Transcript format: minimal customer/staff dialogue for AI analysis
     if (input.format === 'transcript') {
@@ -1564,6 +1583,7 @@ export class ToolHandler {
             messages: transcript,
             totalMessages: transcript.length,
             totalThreads: totalElements,
+            ...(draftsExcluded ? { draftsExcluded: true } : {}),
           }),
         }],
       };
@@ -1583,6 +1603,7 @@ export class ToolHandler {
             conversationId: input.conversationId,
             threads: redactedThreads,
             pagination: { returned: threads.length, total: totalElements },
+            ...(draftsExcluded ? { draftsExcluded: true } : {}),
           }),
         }],
       };
@@ -1627,6 +1648,7 @@ export class ToolHandler {
           conversationId: input.conversationId,
           threads: processedThreads,
           pagination: { returned: threads.length, total: totalElements },
+          ...(draftsExcluded ? { draftsExcluded: true } : {}),
         }),
       }],
     };
