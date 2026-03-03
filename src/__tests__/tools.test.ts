@@ -1002,6 +1002,257 @@ describe('ToolHandler', () => {
     });
   });
 
+  describe('getThreads - excludeDrafts', () => {
+    const threadsWithDrafts = {
+      _embedded: {
+        threads: [
+          {
+            id: 1,
+            type: 'customer',
+            state: 'published',
+            body: '<p>I need help</p>',
+            source: { type: 'email', via: 'customer' },
+            customer: { id: 10, firstName: 'Jane', lastName: 'Doe', email: 'jane@test.com' },
+            createdBy: null,
+            createdAt: '2024-01-01T10:00:00Z',
+            updatedAt: '2024-01-01T10:00:00Z',
+          },
+          {
+            id: 2,
+            type: 'message',
+            state: 'draft',
+            body: '<p>AI generated draft</p>',
+            source: { type: 'support-agent-ai', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:01:00Z',
+            updatedAt: '2024-01-01T10:01:00Z',
+          },
+          {
+            id: 3,
+            type: 'message',
+            state: 'published',
+            body: '<p>Real staff reply</p>',
+            source: { type: 'web', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:05:00Z',
+            updatedAt: '2024-01-01T10:05:00Z',
+          },
+          {
+            id: 4,
+            type: 'message',
+            state: 'draft',
+            body: '<p>Unsent manual draft</p>',
+            source: { type: 'web', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:06:00Z',
+            updatedAt: '2024-01-01T10:06:00Z',
+          },
+        ]
+      },
+      page: { size: 25, totalElements: 4, totalPages: 1, number: 0 }
+    };
+
+    it('should exclude AI drafts and unsent drafts by default', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Should only have customer message and real staff reply (IDs 1 and 3)
+      expect(response.threads).toHaveLength(2);
+      expect(response.threads[0].id).toBe(1);
+      expect(response.threads[1].id).toBe(3);
+      expect(response.draftsExcluded).toBe(true);
+    });
+
+    it('should include all threads when excludeDrafts is false', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', excludeDrafts: false }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Should have all 4 threads
+      expect(response.threads).toHaveLength(4);
+      expect(response.draftsExcluded).toBeUndefined();
+    });
+
+    it('should exclude drafts in transcript format', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', format: 'transcript' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.format).toBe('transcript');
+      // Should only have customer + real staff (AI draft and unsent draft excluded)
+      expect(response.messages).toHaveLength(2);
+      expect(response.messages[0].role).toBe('customer');
+      expect(response.messages[1].role).toBe('staff');
+      expect(response.draftsExcluded).toBe(true);
+    });
+
+    it('should exclude drafts in verbose format', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', verbose: true }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.threads).toHaveLength(2);
+      expect(response.threads[0].id).toBe(1);
+      expect(response.threads[1].id).toBe(3);
+      expect(response.draftsExcluded).toBe(true);
+    });
+  });
+
+  describe('searchConversations - inline transcripts exclude drafts', () => {
+    it('should exclude AI drafts from inline transcripts', async () => {
+      const freshToolHandler = new ToolHandler();
+
+      nock.cleanAll();
+      nock(baseURL)
+        .persist()
+        .post('/oauth2/token')
+        .reply(200, { access_token: 'mock-access-token', token_type: 'Bearer', expires_in: 3600 });
+
+      // Mock conversation search (all 3 statuses)
+      for (const status of ['active', 'pending', 'closed']) {
+        nock(baseURL)
+          .get('/conversations')
+          .query(true)
+          .reply(200, {
+            _embedded: {
+              conversations: status === 'active' ? [{
+                id: 101,
+                subject: 'Test',
+                status: 'active',
+                createdAt: '2024-01-01T00:00:00Z',
+                customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+              }] : [],
+            },
+            page: { size: 10, totalElements: status === 'active' ? 1 : 0 },
+            _links: {},
+          });
+      }
+
+      // Mock threads for conversation 101 — includes an AI draft
+      nock(baseURL)
+        .get('/conversations/101/threads')
+        .query(true)
+        .reply(200, {
+          _embedded: {
+            threads: [
+              {
+                id: 201,
+                type: 'customer',
+                state: 'published',
+                body: '<p>Help me</p>',
+                source: { type: 'email', via: 'customer' },
+                createdAt: '2024-01-01T00:00:00Z',
+                customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+                createdBy: null,
+              },
+              {
+                id: 202,
+                type: 'message',
+                state: 'draft',
+                body: '<p>AI auto-reply</p>',
+                source: { type: 'support-agent-ai', via: 'user' },
+                createdAt: '2024-01-01T00:01:00Z',
+                customer: null,
+                createdBy: { id: 5, firstName: 'Zack', lastName: 'Katz' },
+              },
+              {
+                id: 203,
+                type: 'message',
+                state: 'published',
+                body: '<p>Real reply</p>',
+                source: { type: 'web', via: 'user' },
+                createdAt: '2024-01-01T01:00:00Z',
+                customer: null,
+                createdBy: { id: 5, firstName: 'Agent', lastName: 'Smith' },
+              },
+            ],
+          },
+          page: { size: 25, totalElements: 3 },
+        });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'searchConversations',
+          arguments: { includeTranscripts: true, limit: 10 }
+        }
+      };
+
+      const result = await freshToolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Find the conversation with transcript (list mode uses results[], keyword mode uses resultsByStatus[])
+      const allConvs = response.resultsByStatus
+        ? response.resultsByStatus.flatMap((s: any) => s.conversations)
+        : response.results;
+      const conv = allConvs.find((c: any) => c.id === 101);
+
+      expect(conv).toBeDefined();
+      expect(conv.transcript).toBeDefined();
+      // AI draft (id 202) should be excluded, only customer + real staff
+      expect(conv.transcript).toHaveLength(2);
+      expect(conv.transcript[0].role).toBe('customer');
+      expect(conv.transcript[1].role).toBe('staff');
+    });
+  });
+
   describe('searchConversations - keyword mode', () => {
     it('should search across multiple statuses by default', async () => {
       const freshToolHandler = new ToolHandler();
