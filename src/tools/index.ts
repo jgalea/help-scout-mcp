@@ -7,6 +7,7 @@ import { DocsToolHandler } from './docs-tools.js';
 import { ReportsToolHandler } from './reports-tools.js';
 import { logger } from '../utils/logger.js';
 import { config, isVerbose } from '../utils/config.js';
+import { cache } from '../utils/cache.js';
 import { z } from 'zod';
 
 /**
@@ -56,6 +57,10 @@ import {
   GetThreadsInputSchema,
   GetConversationSummaryInputSchema,
   StructuredConversationFilterInputSchema,
+  CreateReplyInputSchema,
+  GetConversationInputSchema,
+  CreateConversationInputSchema,
+  UpdateConversationInputSchema,
 } from '../schema/types.js';
 
 /**
@@ -471,6 +476,11 @@ export class ToolHandler {
               type: 'string',
               description: 'Pagination cursor for next page',
             },
+            excludeDrafts: {
+              type: 'boolean',
+              default: true,
+              description: 'Exclude AI-generated drafts (source.type "support-agent-ai") and unsent drafts (state "draft") from results. Default: true. Set false to include all threads.',
+            },
           },
           required: ['conversationId'],
         },
@@ -542,6 +552,186 @@ export class ToolHandler {
             limit: { type: 'number', minimum: 1, default: 50 },
             cursor: { type: 'string' },
           },
+        },
+      },
+      {
+        name: 'createReply',
+        description: 'Create a reply on a conversation. Creates draft replies by default (safe). Set draft:false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true). HTML is auto-formatted for Help Scout.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID to reply to',
+            },
+            text: {
+              type: 'string',
+              description: 'Reply body (HTML). Auto-formatted: <p> → <br><br>, <pre> → <div>, inline <code> gets class="inline-code".',
+            },
+            customer: {
+              description: 'Customer receiving the reply. Provide either { id } or { email, firstName?, lastName? }.',
+              oneOf: [
+                {
+                  type: 'object',
+                  properties: { id: { type: 'number' } },
+                  required: ['id'],
+                },
+                {
+                  type: 'object',
+                  properties: {
+                    email: { type: 'string', format: 'email' },
+                    firstName: { type: 'string' },
+                    lastName: { type: 'string' },
+                  },
+                  required: ['email'],
+                },
+              ],
+            },
+            draft: {
+              type: 'boolean',
+              description: 'Create as draft (default: true). Set false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true).',
+              default: true,
+            },
+            user: { type: 'number', description: 'User ID of the replying agent' },
+            assignTo: { type: 'number', description: 'User ID to assign the conversation to' },
+            status: {
+              type: 'string',
+              enum: ['active', 'closed', 'open', 'pending', 'spam'],
+              description: 'Set conversation status after reply',
+            },
+            cc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'CC email addresses' },
+            bcc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'BCC email addresses' },
+          },
+          required: ['conversationId', 'text', 'customer'],
+        },
+      },
+      {
+        name: 'getConversation',
+        description: 'Get a conversation by ID with optional embedded threads/tags. Returns slim response by default.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID to retrieve',
+            },
+            embed: {
+              type: 'array',
+              items: { type: 'string', enum: ['threads'] },
+              description: 'Embed threads in the response',
+            },
+          },
+          required: ['conversationId'],
+        },
+      },
+      {
+        name: 'createConversation',
+        description: 'Create a new conversation in Help Scout. Requires subject, type, mailbox ID, customer, and at least one thread (initial message). Thread HTML is auto-formatted for Help Scout.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'Conversation subject line' },
+            type: {
+              type: 'string',
+              enum: ['email', 'phone', 'chat'],
+              description: 'Type of conversation',
+            },
+            mailboxId: { type: 'number', description: 'Mailbox ID (use searchInboxes or listAllInboxes to find)' },
+            customer: {
+              description: 'Customer for the conversation. Provide either { id } or { email, firstName?, lastName? }.',
+              oneOf: [
+                {
+                  type: 'object',
+                  properties: { id: { type: 'number' } },
+                  required: ['id'],
+                },
+                {
+                  type: 'object',
+                  properties: {
+                    email: { type: 'string', format: 'email' },
+                    firstName: { type: 'string' },
+                    lastName: { type: 'string' },
+                  },
+                  required: ['email'],
+                },
+              ],
+            },
+            threads: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  type: {
+                    type: 'string',
+                    enum: ['customer', 'note', 'message'],
+                    description: 'Thread type: customer (from customer), message (from agent), note (internal)',
+                  },
+                  text: { type: 'string', description: 'Thread body (HTML). Auto-formatted for Help Scout.' },
+                  customer: {
+                    description: 'Thread author (optional, defaults to conversation customer)',
+                    oneOf: [
+                      { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
+                      { type: 'object', properties: { email: { type: 'string' } }, required: ['email'] },
+                    ],
+                  },
+                  draft: { type: 'boolean', description: 'Whether the thread is a draft' },
+                },
+                required: ['type', 'text'],
+              },
+              description: 'Initial thread(s). At least one is required.',
+            },
+            status: {
+              type: 'string',
+              enum: ['active', 'pending', 'closed'],
+              description: 'Conversation status (default: active)',
+              default: 'active',
+            },
+            assignTo: { type: 'number', description: 'User ID to assign conversation to' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the conversation' },
+            imported: { type: 'boolean', description: 'Mark as imported (skips notifications)' },
+            autoReply: { type: 'boolean', description: 'Send auto-reply to customer' },
+            user: { type: 'number', description: 'User ID creating the conversation' },
+            createdAt: { type: 'string', description: 'ISO 8601 timestamp (for imported conversations)' },
+          },
+          required: ['subject', 'type', 'mailboxId', 'customer', 'threads'],
+        },
+      },
+      {
+        name: 'updateConversation',
+        description: 'Update a conversation\'s subject, status, assignee, tags, or custom fields. At least one field to update is required.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID to update',
+            },
+            subject: { type: 'string', description: 'New subject line' },
+            status: {
+              type: 'string',
+              enum: ['active', 'pending', 'closed', 'spam'],
+              description: 'New conversation status',
+            },
+            assignTo: {
+              type: ['number', 'null'],
+              description: 'User ID to assign to, or null to unassign',
+            },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Replace all tags with this list' },
+            customFields: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  id: { type: 'number', description: 'Custom field ID' },
+                  value: { type: 'string', description: 'New value' },
+                },
+                required: ['id', 'value'],
+              },
+              description: 'Custom field values to update',
+            },
+          },
+          required: ['conversationId'],
         },
       },
     ];
@@ -649,6 +839,18 @@ export class ToolHandler {
             break;
           case 'structuredConversationFilter':
             result = await this.structuredConversationFilter(request.params.arguments || {});
+            break;
+          case 'createReply':
+            result = await this.createReply(request.params.arguments || {});
+            break;
+          case 'getConversation':
+            result = await this.getConversation(request.params.arguments || {});
+            break;
+          case 'createConversation':
+            result = await this.createConversation(request.params.arguments || {});
+            break;
+          case 'updateConversation':
+            result = await this.updateConversation(request.params.arguments || {});
             break;
           default:
             throw new Error(`Unknown tool: ${request.params.name}`);
@@ -1273,8 +1475,10 @@ export class ToolHandler {
     const dialogueThreads = threads.filter(t => {
       const type = (t as any).type;
       const state = (t as any).state;
+      const sourceType = (t as any).source?.type;
       if (type !== 'customer' && type !== 'message') return false;
       if (state === 'draft') return false;
+      if (sourceType === 'support-agent-ai') return false;
       return true;
     });
 
@@ -1352,7 +1556,19 @@ export class ToolHandler {
       input.limit
     );
 
-    const threads = allThreads.slice(0, input.limit);
+    let threads = allThreads.slice(0, input.limit);
+
+    // Filter AI drafts and unsent drafts (default: on, set excludeDrafts:false to include)
+    const draftsExcluded = input.excludeDrafts !== false;
+    if (draftsExcluded) {
+      threads = threads.filter(t => {
+        const state = (t as any).state;
+        const sourceType = (t as any).source?.type;
+        if (state === 'draft') return false;
+        if (sourceType === 'support-agent-ai') return false;
+        return true;
+      });
+    }
 
     // Transcript format: minimal customer/staff dialogue for AI analysis
     if (input.format === 'transcript') {
@@ -1367,6 +1583,7 @@ export class ToolHandler {
             messages: transcript,
             totalMessages: transcript.length,
             totalThreads: totalElements,
+            ...(draftsExcluded ? { draftsExcluded: true } : {}),
           }),
         }],
       };
@@ -1386,6 +1603,7 @@ export class ToolHandler {
             conversationId: input.conversationId,
             threads: redactedThreads,
             pagination: { returned: threads.length, total: totalElements },
+            ...(draftsExcluded ? { draftsExcluded: true } : {}),
           }),
         }],
       };
@@ -1430,6 +1648,7 @@ export class ToolHandler {
           conversationId: input.conversationId,
           threads: processedThreads,
           pagination: { returned: threads.length, total: totalElements },
+          ...(draftsExcluded ? { draftsExcluded: true } : {}),
         }),
       }],
     };
@@ -1693,6 +1912,282 @@ export class ToolHandler {
           results: isVerbose(args) ? conversations : conversations.map(c => this.slimConversation(c)),
           pagination: { returned: conversations.length, total: totalElements },
           ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Convert HTML to Help Scout's native format.
+   *
+   * Help Scout renders replies as text with `<br><br>` between paragraphs,
+   * not `<p>` tags. Block elements (ul, ol, blockquote) have built-in CSS
+   * margins, so breaks around them are tuned to avoid double-spacing.
+   *
+   * Relaxed (default): `<br>` after blocks, `<br><br>` before blockquotes.
+   * Compact: no extra breaks around blocks.
+   */
+  /**
+   * Get a single conversation by ID
+   */
+  private async getConversation(args: unknown): Promise<CallToolResult> {
+    const input = GetConversationInputSchema.parse(args);
+
+    const params: Record<string, unknown> = {};
+    if (input.embed && input.embed.length > 0) {
+      params.embed = input.embed.join(',');
+    }
+
+    const conversation = await helpScoutClient.get<Conversation>(
+      `/conversations/${input.conversationId}`,
+      params,
+      { ttl: 0 } // Don't cache direct lookups — user wants fresh data
+    );
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify(
+          isVerbose(args) ? conversation : this.slimConversation(conversation)
+        ),
+      }],
+    };
+  }
+
+  /**
+   * Create a new conversation
+   */
+  private async createConversation(args: unknown): Promise<CallToolResult> {
+    const input = CreateConversationInputSchema.parse(args);
+
+    const compact = config.helpscout.replySpacing === 'compact';
+
+    const requestBody: Record<string, unknown> = {
+      subject: input.subject,
+      type: input.type,
+      mailboxId: input.mailboxId,
+      customer: input.customer,
+      status: input.status,
+      threads: input.threads.map(thread => ({
+        ...thread,
+        text: this.formatReplyHtml(thread.text, compact),
+      })),
+    };
+
+    if (input.assignTo !== undefined) requestBody.assignTo = input.assignTo;
+    if (input.tags !== undefined) requestBody.tags = input.tags;
+    if (input.imported !== undefined) requestBody.imported = input.imported;
+    if (input.autoReply !== undefined) requestBody.autoReply = input.autoReply;
+    if (input.user !== undefined) requestBody.user = input.user;
+    if (input.createdAt !== undefined) requestBody.createdAt = input.createdAt;
+
+    const response = await helpScoutClient.postWithResponse(
+      '/conversations',
+      requestBody
+    );
+
+    const conversationId = response.headers['resource-id'] || null;
+
+    // Invalidate cached conversation lists
+    cache.clear('GET:/conversations');
+
+    // Fetch the created conversation to return full details
+    let conversation: Record<string, unknown> | null = null;
+    if (conversationId) {
+      try {
+        const fetched = await helpScoutClient.get<Conversation>(
+          `/conversations/${conversationId}`,
+          {},
+          { ttl: 0 }
+        );
+        conversation = isVerbose(args) ? fetched as any : this.slimConversation(fetched);
+      } catch {
+        // Non-fatal: we still have the ID even if re-fetch fails
+        logger.warn('Could not fetch created conversation details', { conversationId });
+      }
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId,
+          conversation,
+          message: 'Conversation created successfully.',
+        }),
+      }],
+    };
+  }
+
+  /**
+   * Update a conversation's subject, status, assignee, tags, or custom fields.
+   *
+   * Help Scout uses three separate endpoints:
+   * - PATCH /conversations/{id} with JSONPatch for subject, status, assignTo
+   * - PUT /conversations/{id}/tags for tags (replaces all)
+   * - PUT /conversations/{id}/fields for custom fields (replaces all)
+   */
+  private async updateConversation(args: unknown): Promise<CallToolResult> {
+    const input = UpdateConversationInputSchema.parse(args);
+    const updatedFields: string[] = [];
+    const convId = input.conversationId;
+
+    // 1. Build JSONPatch operations for conversation-level fields
+    const patchOps: Array<{ op: string; path: string; value?: unknown }> = [];
+
+    if (input.subject !== undefined) {
+      patchOps.push({ op: 'replace', path: '/subject', value: input.subject });
+      updatedFields.push('subject');
+    }
+    if (input.status !== undefined) {
+      patchOps.push({ op: 'replace', path: '/status', value: input.status });
+      updatedFields.push('status');
+    }
+    if (input.assignTo !== undefined) {
+      if (input.assignTo === null) {
+        patchOps.push({ op: 'remove', path: '/assignTo' });
+      } else {
+        patchOps.push({ op: 'replace', path: '/assignTo', value: input.assignTo });
+      }
+      updatedFields.push('assignTo');
+    }
+
+    // Execute JSONPatch if there are any operations
+    if (patchOps.length > 0) {
+      await helpScoutClient.patch(`/conversations/${convId}`, patchOps);
+    }
+
+    // 2. Update tags via separate PUT endpoint
+    if (input.tags !== undefined) {
+      await helpScoutClient.put(`/conversations/${convId}/tags`, { tags: input.tags });
+      updatedFields.push('tags');
+    }
+
+    // 3. Update custom fields via separate PUT endpoint
+    if (input.customFields !== undefined) {
+      await helpScoutClient.put(`/conversations/${convId}/fields`, { fields: input.customFields });
+      updatedFields.push('customFields');
+    }
+
+    // Invalidate cached conversation data
+    cache.clear('GET:/conversations');
+
+    // Fetch updated conversation to return current state
+    const fetched = await helpScoutClient.get<Conversation>(
+      `/conversations/${convId}`,
+      {},
+      { ttl: 0 }
+    );
+
+    const conversation = isVerbose(args) ? fetched as any : this.slimConversation(fetched);
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: convId,
+          conversation,
+          updated: updatedFields,
+          message: `Conversation updated: ${updatedFields.join(', ')}.`,
+        }),
+      }],
+    };
+  }
+
+  private formatReplyHtml(html: string, compact: boolean): string {
+    let result = html;
+
+    // Convert <pre> to <div> (Help Scout strips <pre> tags)
+    result = result.replace(/<pre[^>]*>(?:\s*<code[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>/gi,
+      (_match, content: string) => `<div>${content.replace(/\n/g, '<br>')}</div>`);
+
+    // Add inline-code class to bare <code> tags (not inside <div> code blocks, already converted)
+    result = result.replace(/<code(?![^>]*\bclass\b)([^>]*)>/gi, '<code class="inline-code"$1>');
+
+    // Convert plain newlines to <br> (LLMs typically output \n, not HTML tags).
+    // Strip \n immediately after block-level closing tags (just formatting whitespace),
+    // then convert remaining \n to <br>. Double \n becomes a paragraph break.
+    result = result.replace(/(<\/(?:p|div|ul|ol|li|blockquote|h[1-6]|tr|table)>)\n/gi, '$1');
+    result = result.replace(/\n\n/g, '<br><br>');
+    result = result.replace(/\n/g, '<br>');
+
+    // Convert paragraphs to line breaks
+    result = result.replace(/<p[^>]*>/gi, '');
+    result = result.replace(/<\/p>/gi, '<br><br>');
+
+    // Normalize spacing around block elements
+    const blocks = 'ul|ol|blockquote|div';
+    result = result.replace(new RegExp(`(<br>)+\\s*(<(ul|ol|div)[^>]*>)`, 'gi'), '$2');
+    if (compact) {
+      result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '$2');
+      result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1');
+    } else {
+      result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '<br><br>$2');
+      result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1<br>');
+    }
+
+    // Trim trailing breaks
+    result = result.replace(/(<br>)+$/i, '');
+
+    return result;
+  }
+
+  /**
+   * Create a reply on a conversation (draft by default)
+   */
+  private async createReply(args: unknown): Promise<CallToolResult> {
+    const input = CreateReplyInputSchema.parse(args);
+
+    const isDraft = input.draft !== false; // default true
+
+    // Block published replies unless env var is set
+    if (!isDraft && !config.helpscout.allowSendReply) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'Published replies are disabled',
+            message: 'Sending non-draft replies requires HELPSCOUT_ALLOW_SEND_REPLY=true in the environment. This is a safety measure to prevent accidental sends. Draft replies are always allowed.',
+            suggestion: 'Either set draft=true (default) to create a draft, or set the HELPSCOUT_ALLOW_SEND_REPLY=true environment variable to enable sending.',
+          }, null, 2),
+        }],
+      };
+    }
+
+    const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+
+    const requestBody: Record<string, unknown> = {
+      text,
+      customer: input.customer,
+      draft: isDraft,
+    };
+
+    if (input.user !== undefined) requestBody.user = input.user;
+    if (input.assignTo !== undefined) requestBody.assignTo = input.assignTo;
+    if (input.status !== undefined) requestBody.status = input.status;
+    if (input.cc !== undefined) requestBody.cc = input.cc;
+    if (input.bcc !== undefined) requestBody.bcc = input.bcc;
+
+    const response = await helpScoutClient.postWithResponse(
+      `/conversations/${input.conversationId}/reply`,
+      requestBody
+    );
+
+    const threadId = response.headers['resource-id'] || null;
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          threadId,
+          draft: isDraft,
+          message: isDraft
+            ? 'Draft reply created successfully. It can be reviewed and sent from Help Scout.'
+            : 'Reply sent successfully.',
         }),
       }],
     };

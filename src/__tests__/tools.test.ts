@@ -16,6 +16,8 @@ jest.mock('../utils/config.js', () => ({
       get defaultDocsCollectionId() { return process.env.HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID || ''; },
       get defaultDocsSiteId() { return process.env.HELPSCOUT_DEFAULT_DOCS_SITE_ID || ''; },
       get disableDocs() { return process.env.HELPSCOUT_DISABLE_DOCS === 'true'; },
+      get replySpacing() { return process.env.HELPSCOUT_REPLY_SPACING === 'compact' ? 'compact' : 'relaxed'; },
+      get allowSendReply() { return process.env.HELPSCOUT_ALLOW_SEND_REPLY === 'true'; },
     },
     cache: { ttlSeconds: 300, maxSize: 10000 },
     logging: { level: 'info' },
@@ -1000,6 +1002,257 @@ describe('ToolHandler', () => {
     });
   });
 
+  describe('getThreads - excludeDrafts', () => {
+    const threadsWithDrafts = {
+      _embedded: {
+        threads: [
+          {
+            id: 1,
+            type: 'customer',
+            state: 'published',
+            body: '<p>I need help</p>',
+            source: { type: 'email', via: 'customer' },
+            customer: { id: 10, firstName: 'Jane', lastName: 'Doe', email: 'jane@test.com' },
+            createdBy: null,
+            createdAt: '2024-01-01T10:00:00Z',
+            updatedAt: '2024-01-01T10:00:00Z',
+          },
+          {
+            id: 2,
+            type: 'message',
+            state: 'draft',
+            body: '<p>AI generated draft</p>',
+            source: { type: 'support-agent-ai', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:01:00Z',
+            updatedAt: '2024-01-01T10:01:00Z',
+          },
+          {
+            id: 3,
+            type: 'message',
+            state: 'published',
+            body: '<p>Real staff reply</p>',
+            source: { type: 'web', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:05:00Z',
+            updatedAt: '2024-01-01T10:05:00Z',
+          },
+          {
+            id: 4,
+            type: 'message',
+            state: 'draft',
+            body: '<p>Unsent manual draft</p>',
+            source: { type: 'web', via: 'user' },
+            customer: null,
+            createdBy: { id: 20, firstName: 'Zack', lastName: 'Katz', email: 'zack@test.com' },
+            createdAt: '2024-01-01T10:06:00Z',
+            updatedAt: '2024-01-01T10:06:00Z',
+          },
+        ]
+      },
+      page: { size: 25, totalElements: 4, totalPages: 1, number: 0 }
+    };
+
+    it('should exclude AI drafts and unsent drafts by default', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Should only have customer message and real staff reply (IDs 1 and 3)
+      expect(response.threads).toHaveLength(2);
+      expect(response.threads[0].id).toBe(1);
+      expect(response.threads[1].id).toBe(3);
+      expect(response.draftsExcluded).toBe(true);
+    });
+
+    it('should include all threads when excludeDrafts is false', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', excludeDrafts: false }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Should have all 4 threads
+      expect(response.threads).toHaveLength(4);
+      expect(response.draftsExcluded).toBeUndefined();
+    });
+
+    it('should exclude drafts in transcript format', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', format: 'transcript' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.format).toBe('transcript');
+      // Should only have customer + real staff (AI draft and unsent draft excluded)
+      expect(response.messages).toHaveLength(2);
+      expect(response.messages[0].role).toBe('customer');
+      expect(response.messages[1].role).toBe('staff');
+      expect(response.draftsExcluded).toBe(true);
+    });
+
+    it('should exclude drafts in verbose format', async () => {
+      nock(baseURL)
+        .get('/conversations/789/threads')
+        .query({ page: 1, size: 200 })
+        .reply(200, threadsWithDrafts);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getThreads',
+          arguments: { conversationId: '789', verbose: true }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      expect(response.threads).toHaveLength(2);
+      expect(response.threads[0].id).toBe(1);
+      expect(response.threads[1].id).toBe(3);
+      expect(response.draftsExcluded).toBe(true);
+    });
+  });
+
+  describe('searchConversations - inline transcripts exclude drafts', () => {
+    it('should exclude AI drafts from inline transcripts', async () => {
+      const freshToolHandler = new ToolHandler();
+
+      nock.cleanAll();
+      nock(baseURL)
+        .persist()
+        .post('/oauth2/token')
+        .reply(200, { access_token: 'mock-access-token', token_type: 'Bearer', expires_in: 3600 });
+
+      // Mock conversation search (all 3 statuses)
+      for (const status of ['active', 'pending', 'closed']) {
+        nock(baseURL)
+          .get('/conversations')
+          .query(true)
+          .reply(200, {
+            _embedded: {
+              conversations: status === 'active' ? [{
+                id: 101,
+                subject: 'Test',
+                status: 'active',
+                createdAt: '2024-01-01T00:00:00Z',
+                customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+              }] : [],
+            },
+            page: { size: 10, totalElements: status === 'active' ? 1 : 0 },
+            _links: {},
+          });
+      }
+
+      // Mock threads for conversation 101 — includes an AI draft
+      nock(baseURL)
+        .get('/conversations/101/threads')
+        .query(true)
+        .reply(200, {
+          _embedded: {
+            threads: [
+              {
+                id: 201,
+                type: 'customer',
+                state: 'published',
+                body: '<p>Help me</p>',
+                source: { type: 'email', via: 'customer' },
+                createdAt: '2024-01-01T00:00:00Z',
+                customer: { id: 1, firstName: 'Jane', lastName: 'Doe' },
+                createdBy: null,
+              },
+              {
+                id: 202,
+                type: 'message',
+                state: 'draft',
+                body: '<p>AI auto-reply</p>',
+                source: { type: 'support-agent-ai', via: 'user' },
+                createdAt: '2024-01-01T00:01:00Z',
+                customer: null,
+                createdBy: { id: 5, firstName: 'Zack', lastName: 'Katz' },
+              },
+              {
+                id: 203,
+                type: 'message',
+                state: 'published',
+                body: '<p>Real reply</p>',
+                source: { type: 'web', via: 'user' },
+                createdAt: '2024-01-01T01:00:00Z',
+                customer: null,
+                createdBy: { id: 5, firstName: 'Agent', lastName: 'Smith' },
+              },
+            ],
+          },
+          page: { size: 25, totalElements: 3 },
+        });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'searchConversations',
+          arguments: { includeTranscripts: true, limit: 10 }
+        }
+      };
+
+      const result = await freshToolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+
+      // Find the conversation with transcript (list mode uses results[], keyword mode uses resultsByStatus[])
+      const allConvs = response.resultsByStatus
+        ? response.resultsByStatus.flatMap((s: any) => s.conversations)
+        : response.results;
+      const conv = allConvs.find((c: any) => c.id === 101);
+
+      expect(conv).toBeDefined();
+      expect(conv.transcript).toBeDefined();
+      // AI draft (id 202) should be excluded, only customer + real staff
+      expect(conv.transcript).toHaveLength(2);
+      expect(conv.transcript[0].role).toBe('customer');
+      expect(conv.transcript[1].role).toBe('staff');
+    });
+  });
+
   describe('searchConversations - keyword mode', () => {
     it('should search across multiple statuses by default', async () => {
       const freshToolHandler = new ToolHandler();
@@ -1491,4 +1744,830 @@ describe('ToolHandler', () => {
       expect(response.pagination.totalAvailable).toBe(0);
     });
   });
+
+  describe('createReply', () => {
+    it('should list createReply in available tools', async () => {
+      const tools = await toolHandler.listTools();
+      const toolNames = tools.map(t => t.name);
+      expect(toolNames).toContain('createReply');
+    });
+
+    it('should create a draft reply successfully', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply')
+        .reply(201, '', { 'resource-id': '99999' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Thanks for reaching out!</p>',
+            customer: { id: 789 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.conversationId).toBe('12345');
+      expect(response.threadId).toBe('99999');
+      expect(response.draft).toBe(true);
+      expect(response.message).toContain('Draft');
+    });
+
+    it('should default to draft when draft is not specified', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => body.draft === true)
+        .reply(201, '', { 'resource-id': '99999' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Test</p>',
+            customer: { email: 'test@example.com' },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.draft).toBe(true);
+    });
+
+    it('should block published replies when HELPSCOUT_ALLOW_SEND_REPLY is not set', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Test</p>',
+            customer: { id: 789 },
+            draft: false,
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('Published replies are disabled');
+    });
+
+    it('should allow published replies when HELPSCOUT_ALLOW_SEND_REPLY=true', async () => {
+      process.env.HELPSCOUT_ALLOW_SEND_REPLY = 'true';
+
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => body.draft === false)
+        .reply(201, '', { 'resource-id': '88888' });
+
+      // Need a fresh handler to pick up the env change via mock getters
+      const freshHandler = new ToolHandler();
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Sent reply</p>',
+            customer: { id: 789 },
+            draft: false,
+          }
+        }
+      };
+
+      const result = await freshHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.draft).toBe(false);
+      expect(response.message).toContain('sent successfully');
+
+      delete process.env.HELPSCOUT_ALLOW_SEND_REPLY;
+    });
+
+    it('should pass optional fields (cc, bcc, status, user, assignTo)', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => {
+          return body.cc?.length === 1 &&
+            body.bcc?.length === 1 &&
+            body.status === 'closed' &&
+            body.user === 42 &&
+            body.assignTo === 99;
+        })
+        .reply(201, '', { 'resource-id': '77777' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Closing this out.</p>',
+            customer: { id: 789 },
+            cc: ['manager@example.com'],
+            bcc: ['archive@example.com'],
+            status: 'closed',
+            user: 42,
+            assignTo: 99,
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+    });
+
+    it('should validate conversationId format via API constraints', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: 'invalid-id',
+            text: '<p>Test</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.errors).toContain('Invalid conversation ID format');
+    });
+
+    it('should validate missing required fields via API constraints', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            // missing text and customer
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.errors).toContain('text is required');
+      expect(response.details.errors).toContain('customer is required');
+    });
+  });
+
+  describe('formatReplyHtml (via createReply)', () => {
+    // We test formatReplyHtml indirectly by checking the text sent in the POST body
+
+    it('should convert <p> tags to <br><br>', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Hello<br><br>World';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Hello</p><p>World</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should add inline-code class to bare <code> tags', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text.includes('<code class="inline-code">') &&
+                 body.text.includes('<code class="existing">');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Code: <code>test</code> and <code class="existing">keep</code></p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should convert <pre><code> to <div> with <br> for newlines', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // <pre><code>line1\nline2</code></pre> → <div>line1<br>line2</div>
+          return body.text.includes('<div>line1<br>line2</div>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<pre><code>line1\nline2</code></pre>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should strip breaks before lists and add break after in relaxed mode', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // No breaks before <ul>, single <br> after </ul>
+          return body.text.includes('Before<ul>') && body.text.includes('</ul><br>After');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><ul><li>Item</li></ul><p>After</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should add double break before blockquotes in relaxed mode', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text.includes('<br><br><blockquote>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><blockquote>Quoted</blockquote>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should strip all extra breaks in compact mode', async () => {
+      process.env.HELPSCOUT_REPLY_SPACING = 'compact';
+
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // Compact: no breaks before blockquote, no breaks after blocks
+          return !body.text.includes('<br><blockquote>') &&
+                 !body.text.includes('</ul><br>') &&
+                 !body.text.includes('</blockquote><br>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const freshHandler = new ToolHandler();
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>Before</p><ul><li>Item</li></ul><p>Middle</p><blockquote>Quoted</blockquote><p>After</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await freshHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      delete process.env.HELPSCOUT_REPLY_SPACING;
+    });
+
+    it('should convert plain \\n to <br>', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Hello<br>World';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Hello\nWorld',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should convert double \\n to <br><br> for paragraph breaks', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          return body.text === 'Paragraph one<br><br>Paragraph two';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Paragraph one\n\nParagraph two',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should not add extra <br> after block-level closing tags', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // \n after </ul> and </li> should be stripped, not become <br>
+          return !body.text.includes('</ul><br><br>After') &&
+                 !body.text.includes('</li><br>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Before<ul>\n<li>Item 1</li>\n<li>Item 2</li>\n</ul>\nAfter',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should handle mixed HTML and \\n content', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // <strong> is inline, so \n around it should become <br>
+          return body.text.includes('Hello<br><br><strong>Bold</strong><br>End');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: 'Hello\n\n<strong>Bold</strong>\nEnd',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+  });
+
+  describe('getConversation', () => {
+    const mockConversation = {
+      id: 12345,
+      number: 100,
+      subject: 'Test Conversation',
+      status: 'active',
+      mailboxId: 1,
+      assignee: { id: 10, first: 'Agent', last: 'Smith', email: 'agent@example.com' },
+      createdBy: { id: 99, type: 'customer', first: 'John', last: 'Doe', email: 'john@example.com' },
+      tags: [{ name: 'billing' }],
+      createdAt: '2026-01-01T00:00:00Z',
+      closedAt: null,
+      customerWaitingSince: { friendly: '2 hours' },
+    };
+
+    it('should list getConversation in available tools', async () => {
+      const tools = await toolHandler.listTools();
+      const toolNames = tools.map(t => t.name);
+      expect(toolNames).toContain('getConversation');
+    });
+
+    it('should fetch a conversation by ID with slim response', async () => {
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getConversation',
+          arguments: { conversationId: '12345' }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.id).toBe(12345);
+      expect(response.subject).toBe('Test Conversation');
+      // Slim response should not include _links, _embedded, etc.
+      expect(response._links).toBeUndefined();
+    });
+
+    it('should support embed parameter', async () => {
+      nock(baseURL)
+        .get('/conversations/12345')
+        .query({ embed: 'threads' })
+        .reply(200, mockConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getConversation',
+          arguments: { conversationId: '12345', embed: ['threads'] }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should return verbose response when requested', async () => {
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, { ...mockConversation, _links: { self: { href: '/v2/conversations/12345' } } });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'getConversation',
+          arguments: { conversationId: '12345', verbose: true }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      // Verbose response should include _links
+      expect(response._links).toBeDefined();
+    });
+  });
+
+  describe('createConversation', () => {
+    it('should list createConversation in available tools', async () => {
+      const tools = await toolHandler.listTools();
+      const toolNames = tools.map(t => t.name);
+      expect(toolNames).toContain('createConversation');
+    });
+
+    it('should create a conversation successfully', async () => {
+      nock(baseURL)
+        .post('/conversations')
+        .reply(201, '', { 'resource-id': '98765' });
+
+      nock(baseURL)
+        .get('/conversations/98765')
+        .reply(200, {
+          id: 98765,
+          number: 200,
+          subject: 'New Ticket',
+          status: 'active',
+          mailboxId: 1,
+          tags: [],
+          createdAt: '2026-01-01T00:00:00Z',
+        });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createConversation',
+          arguments: {
+            subject: 'New Ticket',
+            type: 'email',
+            mailboxId: 1,
+            customer: { email: 'customer@example.com' },
+            threads: [{ type: 'customer', text: '<p>I need help</p>' }],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.conversationId).toBe('98765');
+      expect(response.conversation).toBeDefined();
+    });
+
+    it('should handle customer by ID', async () => {
+      nock(baseURL)
+        .post('/conversations', (body: any) => body.customer.id === 456)
+        .reply(201, '', { 'resource-id': '98766' });
+
+      nock(baseURL)
+        .get('/conversations/98766')
+        .reply(200, { id: 98766, number: 201, subject: 'By ID', status: 'active', tags: [], createdAt: '2026-01-01T00:00:00Z' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createConversation',
+          arguments: {
+            subject: 'By ID',
+            type: 'email',
+            mailboxId: 1,
+            customer: { id: 456 },
+            threads: [{ type: 'customer', text: 'Hello' }],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+    });
+
+    it('should format thread HTML', async () => {
+      nock(baseURL)
+        .post('/conversations', (body: any) => {
+          // <p> should be converted to <br><br>
+          return body.threads[0].text.includes('<br><br>') && !body.threads[0].text.includes('<p>');
+        })
+        .reply(201, '', { 'resource-id': '98767' });
+
+      nock(baseURL)
+        .get('/conversations/98767')
+        .reply(200, { id: 98767, number: 202, subject: 'HTML', status: 'active', tags: [], createdAt: '2026-01-01T00:00:00Z' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createConversation',
+          arguments: {
+            subject: 'HTML',
+            type: 'email',
+            mailboxId: 1,
+            customer: { email: 'test@example.com' },
+            threads: [{ type: 'customer', text: '<p>First paragraph</p><p>Second paragraph</p>' }],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should reject missing required fields with validation error', async () => {
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createConversation',
+          arguments: {
+            subject: 'Missing fields',
+            // missing type, mailboxId, customer, threads
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      // API constraints validation catches missing fields before Zod
+      expect(response.error).toBe('API Constraint Validation Failed');
+      expect(response.details.errors.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('updateConversation', () => {
+    const mockUpdatedConversation = {
+      id: 12345,
+      number: 100,
+      subject: 'Updated Subject',
+      status: 'closed',
+      mailboxId: 1,
+      tags: [{ name: 'resolved' }],
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+
+    it('should list updateConversation in available tools', async () => {
+      const tools = await toolHandler.listTools();
+      const toolNames = tools.map(t => t.name);
+      expect(toolNames).toContain('updateConversation');
+    });
+
+    it('should update status via JSONPatch', async () => {
+      nock(baseURL)
+        .patch('/conversations/12345', (body: any) => {
+          return Array.isArray(body) && body[0].op === 'replace' && body[0].path === '/status' && body[0].value === 'closed';
+        })
+        .reply(204);
+
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockUpdatedConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'updateConversation',
+          arguments: {
+            conversationId: '12345',
+            status: 'closed',
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.updated).toContain('status');
+    });
+
+    it('should update tags via PUT endpoint', async () => {
+      nock(baseURL)
+        .put('/conversations/12345/tags', { tags: ['resolved', 'billing'] })
+        .reply(204);
+
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockUpdatedConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'updateConversation',
+          arguments: {
+            conversationId: '12345',
+            tags: ['resolved', 'billing'],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.updated).toContain('tags');
+    });
+
+    it('should update custom fields via PUT endpoint', async () => {
+      nock(baseURL)
+        .put('/conversations/12345/fields', { fields: [{ id: 104, value: '168' }] })
+        .reply(204);
+
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockUpdatedConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'updateConversation',
+          arguments: {
+            conversationId: '12345',
+            customFields: [{ id: 104, value: '168' }],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.updated).toContain('customFields');
+    });
+
+    it('should handle multiple updates (JSONPatch + tags)', async () => {
+      nock(baseURL)
+        .patch('/conversations/12345', (body: any) => {
+          return Array.isArray(body) && body.length === 1 && body[0].path === '/subject';
+        })
+        .reply(204);
+
+      nock(baseURL)
+        .put('/conversations/12345/tags', { tags: ['updated'] })
+        .reply(204);
+
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockUpdatedConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'updateConversation',
+          arguments: {
+            conversationId: '12345',
+            subject: 'New Subject',
+            tags: ['updated'],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.updated).toContain('subject');
+      expect(response.updated).toContain('tags');
+    });
+
+    it('should unassign with null assignTo', async () => {
+      nock(baseURL)
+        .patch('/conversations/12345', (body: any) => {
+          return Array.isArray(body) && body[0].op === 'remove' && body[0].path === '/assignTo';
+        })
+        .reply(204);
+
+      nock(baseURL)
+        .get('/conversations/12345')
+        .reply(200, mockUpdatedConversation);
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'updateConversation',
+          arguments: {
+            conversationId: '12345',
+            assignTo: null,
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.updated).toContain('assignTo');
+    });
+  });
 });
+

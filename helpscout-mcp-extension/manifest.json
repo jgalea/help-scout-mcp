@@ -3,8 +3,8 @@
   "name": "help-scout-mcp",
   "display_name": "Help Scout MCP Server",
   "version": "2.0.0",
-  "description": "Help Scout MCP server — search and summarize support tickets, manage conversations with full transcripts, browse and edit Docs articles, and generate email, chat, and happiness reports",
-  "long_description": "Help Scout integration for AI assistants.\n\n**Core Features:**\n- Advanced conversation search with query syntax\n- Multi-status search across active/pending/closed conversations\n- Inline transcripts for single-call ticket summarization\n- Structured filtering by ticket number, assignee, customer, or folder\n- Complete thread message retrieval with transcript format\n- Conversation summaries with customer and staff messages\n- Inbox discovery and server time utilities\n\n**Optional Features** (require additional configuration):\n- Full Docs API integration (articles, collections, categories)\n- Complete Reports API (email, chat, phone, happiness, company)\n\n**Security:**\n- OAuth2 Client Credentials authentication\n- Optional message content redaction via `REDACT_MESSAGE_CONTENT`\n- Comprehensive audit logging\n- Rate limiting with automatic retry",
+  "description": "Help Scout MCP server — search and summarize support tickets, manage conversations with full transcripts, create draft or published replies, browse and edit Docs articles, and generate email, chat, and happiness reports",
+  "long_description": "Help Scout integration for AI assistants.\n\n**Core Features:**\n- Advanced conversation search with query syntax\n- Multi-status search across active/pending/closed conversations\n- Inline transcripts for single-call ticket summarization\n- Structured filtering by ticket number, assignee, customer, or folder\n- Complete thread message retrieval with transcript format\n- Conversation summaries with customer and staff messages\n- Create draft or published replies with HTML formatting optimized for Help Scout\n- Inbox discovery and server time utilities\n\n**Optional Features** (require additional configuration):\n- Full Docs API integration (articles, collections, categories)\n- Complete Reports API (email, chat, phone, happiness, company)\n\n**Security:**\n- OAuth2 Client Credentials authentication\n- Draft-only replies by default (set `HELPSCOUT_ALLOW_SEND_REPLY=true` to allow published replies)\n- Optional message content redaction via `REDACT_MESSAGE_CONTENT`\n- Comprehensive audit logging\n- Rate limiting with automatic retry",
   "author": {
     "name": "GravityKit",
     "url": "https://github.com/GravityKit"
@@ -42,7 +42,9 @@
         "HELPSCOUT_BASE_URL": "${user_config.base_url}",
         "REDACT_MESSAGE_CONTENT": "${user_config.redact_message_content}",
         "LOG_LEVEL": "${user_config.log_level}",
-        "CACHE_TTL_SECONDS": "${user_config.cache_ttl}"
+        "CACHE_TTL_SECONDS": "${user_config.cache_ttl}",
+        "HELPSCOUT_REPLY_SPACING": "${user_config.reply_spacing}",
+        "HELPSCOUT_ALLOW_SEND_REPLY": "${user_config.allow_send_reply}"
       }
     }
   },
@@ -88,6 +90,20 @@
       "description": "How long to cache API responses",
       "default": 300,
       "required": false
+    },
+    "reply_spacing": {
+      "type": "string",
+      "title": "Reply Paragraph Spacing",
+      "description": "How to space paragraphs around block elements in replies. 'relaxed' adds extra breathing room; 'compact' uses tighter spacing.",
+      "default": "relaxed",
+      "required": false
+    },
+    "allow_send_reply": {
+      "type": "boolean",
+      "title": "Allow Sending Published Replies",
+      "description": "When false (default), only draft replies can be created. Set to true to allow sending published (non-draft) replies.",
+      "default": false,
+      "required": false
     }
   },
   "tools": [
@@ -118,6 +134,22 @@
     {
       "name": "getServerTime",
       "description": "Get current server time for date-relative queries"
+    },
+    {
+      "name": "createReply",
+      "description": "Create a draft or published reply on a conversation with HTML formatting optimized for Help Scout"
+    },
+    {
+      "name": "getConversation",
+      "description": "Get a conversation by ID with optional embedded threads"
+    },
+    {
+      "name": "createConversation",
+      "description": "Create a new conversation with subject, customer, and initial message"
+    },
+    {
+      "name": "updateConversation",
+      "description": "Update a conversation's status, assignee, tags, or subject"
     }
   ],
   "tools_generated": true,

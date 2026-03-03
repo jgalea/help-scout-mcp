@@ -1,6 +1,7 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { Agent as HttpAgent } from 'http';
 import { Agent as HttpsAgent } from 'https';
+import FormData from 'form-data';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { cache } from './cache.js';
@@ -586,6 +587,38 @@ export class HelpScoutDocsClient {
   logPoolStatus(): void {
     const stats = this.getPoolStats();
     logger.debug('Docs connection pool status', stats);
+  }
+
+  /**
+   * Get the Docs API key (ensures authentication first).
+   */
+  async getApiKey(): Promise<string> {
+    await this.ensureAuthenticated();
+    if (!this.apiKey) {
+      throw new Error('Help Scout Docs API key not configured.');
+    }
+    return this.apiKey;
+  }
+
+  /**
+   * Post multipart/form-data to the Help Scout Docs API.
+   * Used for file uploads (article assets, settings assets, article uploads).
+   * @param endpoint The API endpoint
+   * @param formData The FormData instance to send
+   * @returns Promise with the response data
+   */
+  async postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+    await this.ensureAuthenticated();
+
+    const response = await this.executeWithRetry<T>(() =>
+      this.client.post<T>(endpoint, formData, {
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      })
+    );
+
+    return response.data;
   }
 
   /**
