@@ -184,9 +184,10 @@ npx @gravitykit/help-scout-mcp
 | `structuredConversationFilter` | Lookup by ticket number, assignee, customer ID, or folder ID | Ticket lookup, assignee filtering |
 | `getConversationSummary` | First customer message + latest staff reply | Quick conversation overview |
 | `getThreads` | Full message history with optional `transcript` format. Excludes AI drafts by default (`excludeDrafts: true`). | Full context analysis |
-| `searchInboxes` | Find inboxes by name (deprecated: IDs in server instructions) | Discovering available inboxes |
-| `listAllInboxes` | List all inboxes with IDs (deprecated: IDs in server instructions) | Refreshing inbox list mid-session |
+| `getAttachment` | Download a conversation attachment to a temp file | Inspecting uploaded files |
+| `searchInboxes` | List inboxes or filter them by name | Discovering available inboxes |
 | `createReply` | Create a draft or published reply on a conversation | Replying to customers |
+| `createNote` | Create an internal note on a conversation | Internal triage and handoff |
 | `getConversation` | Get a conversation by ID with optional embedded threads | Direct conversation lookup |
 | `createConversation` | Create a new conversation with subject, customer, and initial message | Starting new tickets |
 | `updateConversation` | Update a conversation's status, assignee, tags, or subject | Triaging and managing tickets |
@@ -199,18 +200,13 @@ npx @gravitykit/help-scout-mcp
 | Tool | Description | Use Case |
 |------|-------------|----------|
 | `listDocsSites` | List all documentation sites with NLP filtering | Discover available sites |
-| `getDocsSite` | Get a specific site by ID | Site details |
 | `listDocsCollections` | List collections with site NLP resolution | Browse documentation structure |
-| `getDocsCollection` | Get a specific collection by ID | Collection details |
-| `listAllDocsCollections` | List all available collections across sites | Discover available content |
 | `getSiteCollections` | Get collections for a specific site using NLP | Find site-specific collections |
 | `listDocsCategories` | List categories in a collection | Navigate collection organization |
-| `getDocsCategory` | Get a specific category by ID | Category details |
-| `listDocsArticlesByCollection` | List articles in a collection (sort by popularity) | Find articles by collection |
-| `listDocsArticlesByCategory` | List articles in a category (sort by popularity) | Find articles by category |
+| `getDocsEntity` | Get a specific site, collection, or category by type and ID | Entity details |
+| `listDocsArticles` | List articles in a collection or category | Find articles by location |
 | `searchDocsArticles` | Search articles by keyword across sites/collections | Content search |
 | `getDocsArticle` | Get full article content | Read complete documentation |
-| `getTopDocsArticles` | Get most popular articles by views with NLP support | Find most-read documentation |
 | `listRelatedDocsArticles` | Get articles related to a given article | Content discovery |
 | `updateDocsViewCount` | Update the view count for an article | Analytics tracking |
 | `createDocsArticle` | Create a new article | Content creation |
@@ -218,11 +214,10 @@ npx @gravitykit/help-scout-mcp
 | `deleteDocsArticle` | Delete an article (requires `HELPSCOUT_ALLOW_DOCS_DELETE=true`) | Content management |
 | `uploadDocsArticle` | Upload an article from a file | Bulk content import |
 | `createDocsCategory` | Create a new category in a collection | Organize documentation |
-| `updateDocsCategory` | Update category properties | Manage categories |
+| `updateDocsEntity` | Update a collection or category | Manage docs structure |
 | `updateDocsCategoryOrder` | Reorder categories within a collection | Organize documentation |
 | `deleteDocsCategory` | Delete a category | Content management |
 | `createDocsCollection` | Create a new collection on a site | Organize documentation |
-| `updateDocsCollection` | Update collection properties | Manage collections |
 | `deleteDocsCollection` | Delete a collection | Content management |
 | `listDocsArticleRevisions` | List revisions for an article | Version history |
 | `getDocsArticleRevision` | Get a specific article revision | Version comparison |
@@ -234,22 +229,14 @@ npx @gravitykit/help-scout-mcp
 | `createDocsSite` / `updateDocsSite` / `deleteDocsSite` | Manage Docs sites | Site management |
 | `getDocsSiteRestrictions` / `updateDocsSiteRestrictions` | Manage site access restrictions | Access control |
 | `createDocsArticleAsset` / `createDocsSettingsAsset` | Upload assets (images, files) | Asset management |
-| `testDocsConnection` | Test Docs API connectivity | Troubleshooting |
-| `clearDocsCache` | Clear cached Docs data | Cache management |
 
 ### Reports & Analytics Tools
 
 | Tool | Description | Requirements |
 |------|-------------|-------------|
 | `getTopArticles` | Get top most viewed docs articles sorted by popularity | Works with all plans |
-| `getChatReport` | Chat conversation analytics with volume, response times, and resolution metrics | Plus/Pro plan required |
-| `getEmailReport` | Email conversation analytics with volume, response times, and resolution metrics | Plus/Pro plan required |
-| `getPhoneReport` | Phone conversation analytics with call volume and duration metrics | Plus/Pro plan required |
-| `getUserReport` | User/team performance report with productivity metrics and happiness scores | Plus/Pro plan required |
-| `getCompanyReport` | Company-wide analytics with customer volume and team performance | Plus/Pro plan required |
-| `getHappinessReport` | Customer satisfaction scores and feedback analysis | Plus/Pro plan required |
+| `getReport` | Get chat, email, phone, user, company, happiness, or docs reports by `type` | Plus/Pro plan required |
 | `getHappinessRatings` | Individual happiness ratings with conversation details | Plus/Pro plan required |
-| `getDocsReport` | Comprehensive docs analytics report with article views and visitor metrics | Plus/Pro plan required |
 
 ### Resources
 
@@ -323,7 +310,7 @@ listDocsSites({
 })
 
 // Get articles in a collection
-listDocsArticlesByCollection({
+listDocsArticles({
   collectionId: "123456",
   status: "published",
   sort: "popularity"
@@ -422,7 +409,8 @@ searchConversations({
 ### Reports Examples
 ```javascript
 // Get email conversation report with comparison
-getEmailReport({
+getReport({
+  type: "email",
   start: "2024-01-01T00:00:00Z",
   end: "2024-01-31T23:59:59Z",
   previousStart: "2023-12-01T00:00:00Z",
@@ -432,7 +420,8 @@ getEmailReport({
 })
 
 // Get user performance report
-getUserReport({
+getReport({
+  type: "user",
   start: "2024-01-01T00:00:00Z",
   end: "2024-01-31T23:59:59Z",
   user: "789012",
@@ -440,17 +429,19 @@ getUserReport({
   officeHours: true
 })
 
-// Get happiness ratings with filters
-getHappinessReport({
+// Get happiness report with filters
+getReport({
+  type: "happiness",
   start: "2024-01-01T00:00:00Z",
   end: "2024-01-31T23:59:59Z",
-  rating: ["great", "okay"],
+  rating: ["great", "ok"],
   mailboxes: ["123456"],
   viewBy: "day"
 })
 
 // Get company-wide analytics
-getCompanyReport({
+getReport({
+  type: "company",
   start: "2024-01-01T00:00:00Z",
   end: "2024-01-31T23:59:59Z",
   viewBy: "month"
@@ -481,7 +472,7 @@ Every conversation and thread is stripped to just the fields that matter: id, nu
 
 ### Verbose (`verbose: true`)
 
-Returns the full, raw Help Scout API response objects. Useful for debugging or when you need a specific field that slim mode strips out. Available on every tool via a single boolean flag.
+Returns the full, raw Help Scout API response objects. Useful for debugging or when you need a specific field that slim mode strips out. This behavior is still supported, but `verbose` is no longer advertised in tool schemas; the default public surface stays slim.
 
 ```json
 {
@@ -602,9 +593,9 @@ The MCP server includes intelligent natural language processing for Help Scout D
 #### Collections
 ```javascript
 // These all work to find GravityKit articles:
-getTopDocsArticles({ query: "GravityKit docs" })
-getTopDocsArticles({ query: "top GravityKit articles" })
-getTopDocsArticles({ query: "What are the most popular GravityKit help articles?" })
+listDocsCollections({ query: "GravityKit" })
+getSiteCollections({ query: "GravityKit" })
+searchDocsArticles({ query: "GravityKit help articles" })
 ```
 
 #### Sites
@@ -632,7 +623,6 @@ export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
 
 ### Discovery Tools
 - Use `listDocsSites` to see all Docs sites (with optional NLP filtering)
-- Use `listAllDocsCollections` to see all available collections across sites
 - Use `getSiteCollections` to get collections for a specific site using NLP
 - Sites and collections are automatically cached for performance
 
