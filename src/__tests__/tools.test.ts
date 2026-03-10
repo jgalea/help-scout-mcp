@@ -107,12 +107,14 @@ describe('ToolHandler', () => {
         'getConversationSummary',
         'getThreads',
         'getServerTime',
-        'listAllInboxes',
-        'structuredConversationFilter'
+        'structuredConversationFilter',
+        'createNote',
       ];
       expectedCoreTools.forEach(name => {
         expect(toolNames).toContain(name);
       });
+
+      expect(toolNames).not.toContain('listAllInboxes');
     });
 
     it('should have proper tool schemas', async () => {
@@ -124,6 +126,7 @@ describe('ToolHandler', () => {
         expect(tool).toHaveProperty('inputSchema');
         expect(tool.inputSchema).toHaveProperty('type', 'object');
         expect(tool.inputSchema).toHaveProperty('properties');
+        expect((tool.inputSchema as any).properties.verbose).toBeUndefined();
       });
     });
   });
@@ -152,8 +155,8 @@ describe('ToolHandler', () => {
     });
   });
 
-  describe('listAllInboxes', () => {
-    it('should list all inboxes with helpful guidance', async () => {
+  describe('listAllInboxes alias', () => {
+    it('should route legacy listAllInboxes calls through searchInboxes', async () => {
       const mockResponse = {
         _embedded: {
           mailboxes: [
@@ -161,12 +164,12 @@ describe('ToolHandler', () => {
             { id: 2, name: 'Sales Inbox', email: 'sales@example.com', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-02T00:00:00Z' }
           ]
         },
-        page: { size: 100, totalElements: 2 }
+        page: { size: 50, totalElements: 2 }
       };
 
       nock(baseURL)
         .get('/mailboxes')
-        .query({ page: 1, size: 100 })
+        .query({ page: 1, size: 50 })
         .reply(200, mockResponse);
 
       const request: CallToolRequest = {
@@ -189,10 +192,10 @@ describe('ToolHandler', () => {
       }
 
       const response = JSON.parse(textContent.text);
-      expect(response.inboxes).toHaveLength(2);
-      expect(response.inboxes[0]).toHaveProperty('id', 1);
-      expect(response.inboxes[0]).toHaveProperty('name', 'Support Inbox');
-      expect(response.totalInboxes).toBe(2);
+      expect(response.results).toHaveLength(2);
+      expect(response.results[0]).toHaveProperty('id', 1);
+      expect(response.results[0]).toHaveProperty('name', 'Support Inbox');
+      expect(response.totalFound).toBe(2);
     });
   });
 
@@ -609,8 +612,7 @@ describe('ToolHandler', () => {
       const textContent = result.content[0] as { type: 'text'; text: string };
       const response = JSON.parse(textContent.text);
 
-      expect(response.apiGuidance).toBeDefined();
-      expect(response.apiGuidance[0]).toContain('NEXT STEP');
+      expect(response.apiGuidance).toBeUndefined();
     });
 
     it('should handle tool calls without API guidance', async () => {
@@ -2569,5 +2571,86 @@ describe('ToolHandler', () => {
       expect(response.updated).toContain('assignTo');
     });
   });
-});
 
+  describe('merged reports tools', () => {
+    it('should call getReport for merged report types', async () => {
+      nock(baseURL)
+        .get('/reports/email')
+        .query({
+          start: '2024-01-01T00:00:00Z',
+          end: '2024-01-31T23:59:59Z',
+          mailboxes: '123',
+          viewBy: 'week',
+        })
+        .reply(200, {
+          report: {
+            current: {
+              startDate: '2024-01-01T00:00:00Z',
+              endDate: '2024-01-31T23:59:59Z',
+              totalConversations: 5,
+              newConversations: 5,
+              customers: 4,
+              conversationsPerDay: 1,
+            },
+          },
+        });
+
+      const result = await toolHandler.callTool({
+        method: 'tools/call',
+        params: {
+          name: 'getReport',
+          arguments: {
+            type: 'email',
+            start: '2024-01-01T00:00:00Z',
+            end: '2024-01-31T23:59:59Z',
+            mailboxes: ['123'],
+            viewBy: 'week',
+          },
+        },
+      });
+
+      expect(result.isError).toBeUndefined();
+      const response = JSON.parse((result.content[0] as { text: string }).text);
+      expect(response.report.current.totalConversations).toBe(5);
+    });
+
+    it('should route legacy report aliases through getReport', async () => {
+      nock(baseURL)
+        .get('/reports/company')
+        .query({
+          start: '2024-02-01T00:00:00Z',
+          end: '2024-02-29T23:59:59Z',
+          viewBy: 'month',
+        })
+        .reply(200, {
+          report: {
+            current: {
+              startDate: '2024-02-01T00:00:00Z',
+              endDate: '2024-02-29T23:59:59Z',
+              totalCustomers: 9,
+              totalConversations: 14,
+              teamMembers: 3,
+              avgConversationsPerCustomer: 1.55,
+              avgRepliesPerConversation: 2.1,
+            },
+          },
+        });
+
+      const result = await toolHandler.callTool({
+        method: 'tools/call',
+        params: {
+          name: 'getCompanyReport',
+          arguments: {
+            start: '2024-02-01T00:00:00Z',
+            end: '2024-02-29T23:59:59Z',
+            viewBy: 'month',
+          },
+        },
+      });
+
+      expect(result.isError).toBeUndefined();
+      const response = JSON.parse((result.content[0] as { text: string }).text);
+      expect(response.report.current.totalCustomers).toBe(9);
+    });
+  });
+});
