@@ -207,7 +207,7 @@ export class HelpScoutAPIConstraints {
     }
     if (!args.mailboxId || typeof args.mailboxId !== 'number') {
       errors.push('mailboxId is required');
-      suggestions.push('Use searchInboxes or listAllInboxes to find the correct mailbox ID');
+      suggestions.push('Use searchInboxes to find the correct mailbox ID');
     }
     if (!args.customer) {
       errors.push('customer is required');

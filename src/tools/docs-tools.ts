@@ -3,6 +3,7 @@ import { DocsPaginatedResponse } from '../utils/helpscout-docs-client.js';
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
 import { isVerbose } from '../utils/config.js';
+import { compactTool } from './tool-utils.js';
 import { z } from 'zod';
 
 /**
@@ -25,8 +26,6 @@ import {
   ListDocsArticlesInputSchema,
   GetDocsArticleInputSchema,
   UpdateDocsArticleInputSchema,
-  UpdateDocsCollectionInputSchema,
-  UpdateDocsCategoryInputSchema,
 } from '../schema/types.js';
 
 /**
@@ -46,6 +45,45 @@ const DOCS_TOOL_CONSTANTS = {
   DEFAULT_ARTICLE_SORT: 'createdAt',
 } as const;
 
+const DocsEntityTypeSchema = z.enum(['site', 'collection', 'category']);
+const UpdatableDocsEntityTypeSchema = z.enum(['collection', 'category']);
+const ListDocsArticlesMergedInputSchema = ListDocsArticlesInputSchema.refine(
+  data => Number(Boolean(data.collectionId)) + Number(Boolean(data.categoryId)) === 1,
+  { message: 'Provide exactly one of collectionId or categoryId.' }
+);
+const GetDocsEntityInputSchema = z.object({
+  type: DocsEntityTypeSchema,
+  id: z.string(),
+});
+const UpdateDocsEntityInputSchema = z.object({
+  type: UpdatableDocsEntityTypeSchema,
+  id: z.string(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  visibility: z.enum(['public', 'private']).optional(),
+  order: z.number().optional(),
+});
+const DOCS_TOOL_DESCRIPTIONS: Record<string, string> = {
+  listDocsSites: 'List Docs sites.',
+  listDocsCollections: 'List Docs collections.',
+  listDocsCategories: 'List categories in a collection.',
+  listDocsArticles: 'List articles in a collection or category.',
+  getDocsArticle: 'Get a Docs article.',
+  updateDocsArticle: 'Update a Docs article.',
+  updateDocsEntity: 'Update a Docs collection or category.',
+  getSiteCollections: 'Get collections for a site.',
+  searchDocsArticles: 'Search Docs articles.',
+  createDocsArticle: 'Create a Docs article.',
+  deleteDocsArticle: 'Delete a Docs article.',
+  updateDocsViewCount: 'Update a Docs article view count.',
+  listRelatedDocsArticles: 'List related Docs articles.',
+  createDocsCategory: 'Create a Docs category.',
+  deleteDocsCategory: 'Delete a Docs category.',
+  getDocsEntity: 'Get a Docs site, collection, or category.',
+  updateDocsCategoryOrder: 'Reorder categories in a collection.',
+  getDocsSiteRestrictions: 'Get Docs site restrictions.',
+};
+
 export class DocsToolHandler extends Injectable {
   constructor(container?: ServiceContainer) {
     super(container);
@@ -55,7 +93,7 @@ export class DocsToolHandler extends Injectable {
    * List all Docs-related tools
    */
   async listDocsTools(): Promise<Tool[]> {
-    return [
+    const tools: Tool[] = [
       {
         name: 'listDocsSites',
         description: 'List all Help Scout Docs sites or search for a specific site. Supports natural language queries like "find GravityKit site"',
@@ -156,93 +194,46 @@ export class DocsToolHandler extends Injectable {
         },
       },
       {
-        name: 'listDocsArticlesByCollection',
-        description: 'List articles within a specific collection',
+        name: 'listDocsArticles',
+        description: DOCS_TOOL_DESCRIPTIONS.listDocsArticles,
         inputSchema: {
           type: 'object',
           properties: {
             collectionId: {
               type: 'string',
-              description: 'The collection ID to list articles for',
+              description: 'Collection ID. Use either collectionId or categoryId.',
             },
-            status: {
-              type: 'string',
-              enum: ['all', 'published', 'notpublished'],
-              description: 'Filter by article status',
-              default: 'all',
-            },
-            sort: {
-              type: 'string',
-              enum: ['number', 'status', 'name', 'popularity', 'createdAt', 'updatedAt'],
-              default: DOCS_TOOL_CONSTANTS.DEFAULT_ARTICLE_SORT,
-              description: 'Sort field',
-            },
-            order: {
-              type: 'string',
-              enum: ['asc', 'desc'],
-              default: 'desc',
-              description: 'Sort order',
-            },
-            page: {
-              type: 'number',
-              description: 'Page number to retrieve',
-              minimum: 1,
-              default: 1,
-            },
-            pageSize: {
-              type: 'number',
-              description: `Number of articles per page (max ${DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
-              minimum: 1,
-              maximum: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
-              default: DOCS_TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
-            },
-          },
-          required: ['collectionId'],
-        },
-      },
-      {
-        name: 'listDocsArticlesByCategory',
-        description: 'List articles within a specific category',
-        inputSchema: {
-          type: 'object',
-          properties: {
             categoryId: {
               type: 'string',
-              description: 'The category ID to list articles for',
+              description: 'Category ID. Use either collectionId or categoryId.',
             },
             status: {
               type: 'string',
               enum: ['all', 'published', 'notpublished'],
-              description: 'Filter by article status',
               default: 'all',
             },
             sort: {
               type: 'string',
               enum: ['number', 'status', 'name', 'popularity', 'createdAt', 'updatedAt'],
               default: DOCS_TOOL_CONSTANTS.DEFAULT_ARTICLE_SORT,
-              description: 'Sort field',
             },
             order: {
               type: 'string',
               enum: ['asc', 'desc'],
               default: 'desc',
-              description: 'Sort order',
             },
             page: {
               type: 'number',
-              description: 'Page number to retrieve',
               minimum: 1,
               default: 1,
             },
             pageSize: {
               type: 'number',
-              description: `Number of articles per page (max ${DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
               minimum: 1,
               maximum: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
               default: DOCS_TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
             },
           },
-          required: ['categoryId'],
         },
       },
       {
@@ -301,119 +292,33 @@ export class DocsToolHandler extends Injectable {
         },
       },
       {
-        name: 'updateDocsCollection',
-        description: 'Update collection properties (name, description, visibility, order)',
+        name: 'updateDocsEntity',
+        description: DOCS_TOOL_DESCRIPTIONS.updateDocsEntity,
         inputSchema: {
           type: 'object',
           properties: {
-            collectionId: {
+            type: {
               type: 'string',
-              description: 'The collection ID to update',
+              enum: ['collection', 'category'],
+            },
+            id: {
+              type: 'string',
             },
             name: {
               type: 'string',
-              description: 'New collection name',
             },
             description: {
               type: 'string',
-              description: 'New collection description',
             },
             visibility: {
               type: 'string',
               enum: ['public', 'private'],
-              description: 'Collection visibility',
             },
             order: {
               type: 'number',
-              description: 'Display order (lower numbers appear first)',
             },
           },
-          required: ['collectionId'],
-        },
-      },
-      {
-        name: 'updateDocsCategory',
-        description: 'Update category properties (name, description, visibility, order)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            categoryId: {
-              type: 'string',
-              description: 'The category ID to update',
-            },
-            name: {
-              type: 'string',
-              description: 'New category name',
-            },
-            description: {
-              type: 'string',
-              description: 'New category description',
-            },
-            visibility: {
-              type: 'string',
-              enum: ['public', 'private'],
-              description: 'Category visibility',
-            },
-            order: {
-              type: 'number',
-              description: 'Display order (lower numbers appear first)',
-            },
-          },
-          required: ['categoryId'],
-        },
-      },
-      {
-        name: 'getTopDocsArticles',
-        description: 'Get the most popular Help Scout Docs articles sorted by views/popularity. Supports natural language queries like "top GravityKit articles"',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Natural language query to identify the collection (e.g. "GravityKit docs", "TrustedLogin articles")',
-            },
-            collectionId: {
-              type: 'string',
-              description: 'Optional: Specific collection ID (overrides query)',
-            },
-            limit: {
-              type: 'number',
-              description: 'Number of top articles to return (default: 100)',
-              minimum: 1,
-              maximum: 200,
-              default: 100,
-            },
-            status: {
-              type: 'string',
-              enum: ['all', 'published', 'notpublished'],
-              description: 'Filter by article status',
-              default: 'published',
-            },
-          },
-        },
-      },
-      {
-        name: 'testDocsConnection',
-        description: 'Test the Help Scout Docs API connection and authentication',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-      {
-        name: 'clearDocsCache',
-        description: 'Clear the Docs API cache to force fresh data retrieval',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-      {
-        name: 'listAllDocsCollections',
-        description: 'List all available Docs collections across all sites with their names for easy reference',
-        inputSchema: {
-          type: 'object',
-          properties: {},
+          required: ['type', 'id'],
         },
       },
       {
@@ -780,36 +685,18 @@ export class DocsToolHandler extends Injectable {
       },
       // Single Resource Getters
       {
-        name: 'getDocsCategory',
-        description: 'Get a single category by ID',
+        name: 'getDocsEntity',
+        description: DOCS_TOOL_DESCRIPTIONS.getDocsEntity,
         inputSchema: {
           type: 'object',
           properties: {
-            categoryId: { type: 'string', description: 'The category ID to retrieve' },
+            type: {
+              type: 'string',
+              enum: ['site', 'collection', 'category'],
+            },
+            id: { type: 'string' },
           },
-          required: ['categoryId'],
-        },
-      },
-      {
-        name: 'getDocsCollection',
-        description: 'Get a single collection by ID',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            collectionId: { type: 'string', description: 'The collection ID to retrieve' },
-          },
-          required: ['collectionId'],
-        },
-      },
-      {
-        name: 'getDocsSite',
-        description: 'Get a single site by ID',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            siteId: { type: 'string', description: 'The site ID to retrieve' },
-          },
-          required: ['siteId'],
+          required: ['type', 'id'],
         },
       },
       // Category Order
@@ -985,6 +872,8 @@ export class DocsToolHandler extends Injectable {
         },
       },
     ];
+
+    return tools.map(tool => compactTool(tool, DOCS_TOOL_DESCRIPTIONS[tool.name]));
   }
 
   /**
@@ -1015,11 +904,10 @@ export class DocsToolHandler extends Injectable {
         case 'listDocsCategories':
           result = await this.listDocsCategories(request.params.arguments || {});
           break;
+        case 'listDocsArticles':
         case 'listDocsArticlesByCollection':
-          result = await this.listDocsArticlesByCollection(request.params.arguments || {});
-          break;
         case 'listDocsArticlesByCategory':
-          result = await this.listDocsArticlesByCategory(request.params.arguments || {});
+          result = await this.listDocsArticles(request.params.arguments || {});
           break;
         case 'getDocsArticle':
           result = await this.getDocsArticle(request.params.arguments || {});
@@ -1027,11 +915,10 @@ export class DocsToolHandler extends Injectable {
         case 'updateDocsArticle':
           result = await this.updateDocsArticle(request.params.arguments || {});
           break;
+        case 'updateDocsEntity':
         case 'updateDocsCollection':
-          result = await this.updateDocsCollection(request.params.arguments || {});
-          break;
         case 'updateDocsCategory':
-          result = await this.updateDocsCategory(request.params.arguments || {});
+          result = await this.updateDocsEntity(request.params.arguments || {});
           break;
         case 'getTopDocsArticles':
           result = await this.getTopDocsArticles(request.params.arguments || {});
@@ -1101,14 +988,11 @@ export class DocsToolHandler extends Injectable {
           result = await this.createDocsSettingsAsset(request.params.arguments || {});
           break;
         // Single Resource Getters
+        case 'getDocsEntity':
         case 'getDocsCategory':
-          result = await this.getDocsCategory(request.params.arguments || {});
-          break;
         case 'getDocsCollection':
-          result = await this.getDocsCollection(request.params.arguments || {});
-          break;
         case 'getDocsSite':
-          result = await this.getDocsSite(request.params.arguments || {});
+          result = await this.getDocsEntity(request.params.arguments || {});
           break;
         // Category Order
         case 'updateDocsCategoryOrder':
@@ -1421,10 +1305,10 @@ export class DocsToolHandler extends Injectable {
     };
   }
 
-  private async listDocsArticlesByCollection(args: unknown): Promise<CallToolResult> {
-    const input = ListDocsArticlesInputSchema.parse(args);
+  private async listDocsArticles(args: unknown): Promise<CallToolResult> {
+    const input = ListDocsArticlesMergedInputSchema.parse(args);
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     const params: Record<string, unknown> = {
       page: input.page,
       pageSize: input.pageSize,
@@ -1436,47 +1320,10 @@ export class DocsToolHandler extends Injectable {
       params.status = input.status;
     }
 
-    const response = await helpScoutDocsClient.get<DocsPaginatedResponse<DocsArticleRef>>(
-      `/collections/${input.collectionId}/articles`,
-      params
-    );
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            articles: isVerbose(args) ? (response.items || []) : (response.items || []).map((a: any) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, viewCount: a.viewCount, collectionId: a.collectionId })),
-            pagination: {
-              page: response.page,
-              pages: response.pages,
-              count: response.count,
-            },
-          }),
-        },
-      ],
-    };
-  }
-
-  private async listDocsArticlesByCategory(args: unknown): Promise<CallToolResult> {
-    const input = ListDocsArticlesInputSchema.parse(args);
-    const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
-    const params: Record<string, unknown> = {
-      page: input.page,
-      pageSize: input.pageSize,
-      sort: input.sort,
-      order: input.order,
-    };
-
-    if (input.status !== 'all') {
-      params.status = input.status;
-    }
-
-    const response = await helpScoutDocsClient.get<DocsPaginatedResponse<DocsArticleRef>>(
-      `/categories/${input.categoryId}/articles`,
-      params
-    );
+    const endpoint = input.collectionId
+      ? `/collections/${input.collectionId}/articles`
+      : `/categories/${input.categoryId}/articles`;
+    const response = await helpScoutDocsClient.get<DocsPaginatedResponse<DocsArticleRef>>(endpoint, params);
 
     return {
       content: [
@@ -1570,19 +1417,24 @@ export class DocsToolHandler extends Injectable {
     };
   }
 
-  private async updateDocsCollection(args: unknown): Promise<CallToolResult> {
-    const input = UpdateDocsCollectionInputSchema.parse(args);
+  private async updateDocsEntity(args: unknown): Promise<CallToolResult> {
+    const rawArgs = (args && typeof args === 'object') ? args as Record<string, unknown> : {};
+    const normalizedArgs =
+      rawArgs.type ? rawArgs : rawArgs.collectionId ? { ...rawArgs, type: 'collection', id: rawArgs.collectionId } :
+      rawArgs.categoryId ? { ...rawArgs, type: 'category', id: rawArgs.categoryId } :
+      rawArgs;
+    const input = UpdateDocsEntityInputSchema.parse(normalizedArgs);
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
-    // Build update payload
+
     const updateData: Record<string, unknown> = {};
     if (input.name !== undefined) updateData.name = input.name;
     if (input.description !== undefined) updateData.description = input.description;
     if (input.visibility !== undefined) updateData.visibility = input.visibility;
     if (input.order !== undefined) updateData.order = input.order;
 
-    const updatedCollection = await helpScoutDocsClient.update<DocsCollection>(
-      `/collections/${input.collectionId}`,
+    const endpoint = input.type === 'collection' ? `/collections/${input.id}` : `/categories/${input.id}`;
+    const updatedEntity = await helpScoutDocsClient.update<DocsCollection | DocsCategory>(
+      endpoint,
       updateData
     );
 
@@ -1591,35 +1443,7 @@ export class DocsToolHandler extends Injectable {
         {
           type: 'text',
           text: JSON.stringify({
-            collection: updatedCollection,
-          }),
-        },
-      ],
-    };
-  }
-
-  private async updateDocsCategory(args: unknown): Promise<CallToolResult> {
-    const input = UpdateDocsCategoryInputSchema.parse(args);
-    const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
-    // Build update payload
-    const updateData: Record<string, unknown> = {};
-    if (input.name !== undefined) updateData.name = input.name;
-    if (input.description !== undefined) updateData.description = input.description;
-    if (input.visibility !== undefined) updateData.visibility = input.visibility;
-    if (input.order !== undefined) updateData.order = input.order;
-
-    const updatedCategory = await helpScoutDocsClient.update<DocsCategory>(
-      `/categories/${input.categoryId}`,
-      updateData
-    );
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            category: updatedCategory,
+            [input.type]: updatedEntity,
           }),
         },
       ],
@@ -2927,100 +2751,31 @@ export class DocsToolHandler extends Injectable {
   }
 
   // Single Resource Getters implementations
-  private async getDocsCategory(args: unknown): Promise<CallToolResult> {
-    const input = z.object({
-      categoryId: z.string(),
-    }).parse(args);
-    
-    const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
-    try {
-      const response = await helpScoutDocsClient.get<DocsCategory>(
-        `/categories/${input.categoryId}`
-      );
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              category: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to get category',
-              message: error instanceof Error ? error.message : String(error),
-              categoryId: input.categoryId,
-            }),
-          },
-        ],
-      };
-    }
-  }
+  private async getDocsEntity(args: unknown): Promise<CallToolResult> {
+    const rawArgs = (args && typeof args === 'object') ? args as Record<string, unknown> : {};
+    const normalizedArgs =
+      rawArgs.type ? rawArgs : rawArgs.categoryId ? { type: 'category', id: rawArgs.categoryId } :
+      rawArgs.collectionId ? { type: 'collection', id: rawArgs.collectionId } :
+      rawArgs.siteId ? { type: 'site', id: rawArgs.siteId } :
+      rawArgs;
+    const input = GetDocsEntityInputSchema.parse(normalizedArgs);
 
-  private async getDocsCollection(args: unknown): Promise<CallToolResult> {
-    const input = z.object({
-      collectionId: z.string(),
-    }).parse(args);
-    
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
-    try {
-      const response = await helpScoutDocsClient.get<DocsCollection>(
-        `/collections/${input.collectionId}`
-      );
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              collection: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to get collection',
-              message: error instanceof Error ? error.message : String(error),
-              collectionId: input.collectionId,
-            }),
-          },
-        ],
-      };
-    }
-  }
+    const endpointByType: Record<z.infer<typeof DocsEntityTypeSchema>, string> = {
+      site: `/sites/${input.id}`,
+      collection: `/collections/${input.id}`,
+      category: `/categories/${input.id}`,
+    };
 
-  private async getDocsSite(args: unknown): Promise<CallToolResult> {
-    const input = z.object({
-      siteId: z.string(),
-    }).parse(args);
-    
-    const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
     try {
-      const response = await helpScoutDocsClient.get<DocsSite>(
-        `/sites/${input.siteId}`
-      );
-      
+      const response = await helpScoutDocsClient.get<DocsSite | DocsCollection | DocsCategory>(endpointByType[input.type]);
+
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              site: response,
+              [input.type]: response,
             }),
           },
         ],
@@ -3031,9 +2786,10 @@ export class DocsToolHandler extends Injectable {
           {
             type: 'text',
             text: JSON.stringify({
-              error: 'Failed to get site',
+              error: `Failed to get ${input.type}`,
               message: error instanceof Error ? error.message : String(error),
-              siteId: input.siteId,
+              id: input.id,
+              type: input.type,
             }),
           },
         ],

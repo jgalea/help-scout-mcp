@@ -5,6 +5,7 @@ import { HelpScoutAPIConstraints, ToolCallContext } from '../utils/api-constrain
 import { ServiceContainer } from '../utils/service-container.js';
 import { DocsToolHandler } from './docs-tools.js';
 import { ReportsToolHandler } from './reports-tools.js';
+import { compactTool } from './tool-utils.js';
 import { logger } from '../utils/logger.js';
 import { config, isVerbose } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
@@ -47,6 +48,43 @@ const TOOL_CONSTANTS = {
     SPAM: 'spam'
   } as const
 } as const;
+
+const CONVERSATION_TOOL_DESCRIPTIONS: Record<string, string> = {
+  searchInboxes: 'List inboxes or filter them by name.',
+  searchConversations: 'Search or list conversations by status, dates, content, tags, or inbox.',
+  getConversationSummary: 'Get the first customer message and latest staff reply.',
+  getThreads: 'Get conversation threads or a transcript view.',
+  getAttachment: 'Download a conversation attachment to a temp file.',
+  getServerTime: 'Get the current server time.',
+  structuredConversationFilter: 'Filter conversations by IDs and structured fields.',
+  createReply: 'Create a draft reply by default, or send when allowed.',
+  createNote: 'Create an internal note on a conversation.',
+  getConversation: 'Get a conversation by ID.',
+  createConversation: 'Create a new conversation.',
+  updateConversation: 'Update a conversation.',
+};
+const LEGACY_DOCS_TOOL_NAMES = new Set([
+  'listDocsArticlesByCollection',
+  'listDocsArticlesByCategory',
+  'updateDocsCollection',
+  'updateDocsCategory',
+  'getTopDocsArticles',
+  'testDocsConnection',
+  'clearDocsCache',
+  'listAllDocsCollections',
+  'getDocsCategory',
+  'getDocsCollection',
+  'getDocsSite',
+]);
+const LEGACY_REPORT_TOOL_NAMES = new Set([
+  'getChatReport',
+  'getEmailReport',
+  'getPhoneReport',
+  'getUserReport',
+  'getCompanyReport',
+  'getHappinessReport',
+  'getDocsReport',
+]);
 import {
   Inbox,
   Conversation,
@@ -58,31 +96,11 @@ import {
   GetConversationSummaryInputSchema,
   StructuredConversationFilterInputSchema,
   CreateReplyInputSchema,
+  CreateNoteInputSchema,
   GetConversationInputSchema,
   CreateConversationInputSchema,
   UpdateConversationInputSchema,
 } from '../schema/types.js';
-
-/**
- * Add the `verbose` property to a tool's inputSchema.
- */
-function addVerboseParam(tool: Tool): Tool {
-  const schema = tool.inputSchema as any;
-  return {
-    ...tool,
-    inputSchema: {
-      ...schema,
-      properties: {
-        ...schema.properties,
-        verbose: {
-          type: 'boolean',
-          description: 'Return full API response objects instead of slim summaries. Default: false (slim).',
-          default: false,
-        },
-      },
-    },
-  };
-}
 
 export class ToolHandler {
   private callHistory: string[] = [];
@@ -292,13 +310,13 @@ export class ToolHandler {
     const conversationTools: Tool[] = [
       {
         name: 'searchInboxes',
-        description: 'List or search inboxes by name. Deprecated: inbox IDs now in server instructions. Only needed to refresh list mid-session.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.searchInboxes,
         inputSchema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Search query to match inbox names. Use empty string "" to list ALL inboxes. This is case-insensitive substring matching.',
+              description: 'Inbox name filter. Leave empty to return all inboxes.',
             },
             limit: {
               type: 'number',
@@ -312,12 +330,11 @@ export class ToolHandler {
               description: 'Pagination cursor for next page',
             },
           },
-          required: ['query'],
         },
       },
       {
         name: 'searchConversations',
-        description: 'Search conversations by keywords, structured filters, or list by status/date/inbox. Searches ALL statuses (active, pending, closed) by default — do NOT filter statuses unless the user explicitly asks for a specific status.\n\n- For keyword search: provide searchTerms (searches across all statuses)\n- For structured filters: provide contentTerms, subjectTerms, customerEmail, emailDomain, or tags\n- For listing/browsing: use inboxId, tag, createdAfter/createdBefore\n- Set includeTranscripts:true to fetch message transcripts inline (great for summarization). Defaults to 10 conversations when enabled.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.searchConversations,
         inputSchema: {
           type: 'object',
           properties: {
@@ -437,7 +454,7 @@ export class ToolHandler {
       },
       {
         name: 'getConversationSummary',
-        description: 'Get conversation summary with first customer message and latest staff reply',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.getConversationSummary,
         inputSchema: {
           type: 'object',
           properties: {
@@ -451,7 +468,7 @@ export class ToolHandler {
       },
       {
         name: 'getThreads',
-        description: 'Retrieve message history for a conversation. Use format:"transcript" for a minimal customer/staff dialogue optimized for AI analysis.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.getThreads,
         inputSchema: {
           type: 'object',
           properties: {
@@ -487,7 +504,7 @@ export class ToolHandler {
       },
       {
         name: 'getAttachment',
-        description: 'Download an attachment from a Help Scout conversation thread. Returns the file saved to a temp path that can be read with the Read tool. Use getThreads first to find attachment IDs.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.getAttachment,
         inputSchema: {
           type: 'object',
           properties: {
@@ -509,31 +526,15 @@ export class ToolHandler {
       },
       {
         name: 'getServerTime',
-        description: 'Get current server timestamp. Use before date-relative searches to calculate time ranges.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.getServerTime,
         inputSchema: {
           type: 'object',
           properties: {},
         },
       },
       {
-        name: 'listAllInboxes',
-        description: 'List all inboxes with IDs. Deprecated: inbox IDs now in server instructions. Only needed mid-session.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            limit: {
-              type: 'number',
-              description: 'Maximum number of results (1-100)',
-              minimum: 1,
-              maximum: 100,
-              default: 100,
-            },
-          },
-        },
-      },
-      {
         name: 'structuredConversationFilter',
-        description: 'Lookup conversation by ticket number or filter by assignee/customer/folder IDs. Use after discovering IDs from other searches. For initial searches, use searchConversations.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.structuredConversationFilter,
         inputSchema: {
           type: 'object',
           properties: {
@@ -556,7 +557,7 @@ export class ToolHandler {
       },
       {
         name: 'createReply',
-        description: 'Create a reply on a conversation. Creates draft replies by default (safe). Set draft:false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true). HTML is auto-formatted for Help Scout.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.createReply,
         inputSchema: {
           type: 'object',
           properties: {
@@ -606,8 +607,32 @@ export class ToolHandler {
         },
       },
       {
+        name: 'createNote',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.createNote,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            conversationId: {
+              type: 'string',
+              description: 'The conversation ID to add the note to',
+            },
+            text: {
+              type: 'string',
+              description: 'Note body (HTML). Auto-formatted for Help Scout.',
+            },
+            user: { type: 'number', description: 'User ID of the note author' },
+            status: {
+              type: 'string',
+              enum: ['active', 'closed', 'open', 'pending', 'spam'],
+              description: 'Set conversation status after adding the note',
+            },
+          },
+          required: ['conversationId', 'text'],
+        },
+      },
+      {
         name: 'getConversation',
-        description: 'Get a conversation by ID with optional embedded threads/tags. Returns slim response by default.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.getConversation,
         inputSchema: {
           type: 'object',
           properties: {
@@ -626,7 +651,7 @@ export class ToolHandler {
       },
       {
         name: 'createConversation',
-        description: 'Create a new conversation in Help Scout. Requires subject, type, mailbox ID, customer, and at least one thread (initial message). Thread HTML is auto-formatted for Help Scout.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.createConversation,
         inputSchema: {
           type: 'object',
           properties: {
@@ -636,7 +661,7 @@ export class ToolHandler {
               enum: ['email', 'phone', 'chat'],
               description: 'Type of conversation',
             },
-            mailboxId: { type: 'number', description: 'Mailbox ID (use searchInboxes or listAllInboxes to find)' },
+            mailboxId: { type: 'number', description: 'Mailbox ID' },
             customer: {
               description: 'Customer for the conversation. Provide either { id } or { email, firstName?, lastName? }.',
               oneOf: [
@@ -699,7 +724,7 @@ export class ToolHandler {
       },
       {
         name: 'updateConversation',
-        description: 'Update a conversation\'s subject, status, assignee, tags, or custom fields. At least one field to update is required.',
+        description: CONVERSATION_TOOL_DESCRIPTIONS.updateConversation,
         inputSchema: {
           type: 'object',
           properties: {
@@ -742,8 +767,9 @@ export class ToolHandler {
     // Get Reports tools from the Reports handler
     const reportsTools = await this.reportsToolHandler.listReportsTools();
 
-    // Combine all tools and add `verbose` parameter to each
-    return [...conversationTools, ...docsTools, ...reportsTools].map(addVerboseParam);
+    return [...conversationTools, ...docsTools, ...reportsTools].map(tool =>
+      compactTool(tool, CONVERSATION_TOOL_DESCRIPTIONS[tool.name])
+    );
   }
 
   async callTool(request: CallToolRequest): Promise<CallToolResult> {
@@ -801,11 +827,13 @@ export class ToolHandler {
 
       // Check if this is a Docs tool (unless disabled)
       const isDocsTool = !config.helpscout.disableDocs &&
-        (await this.docsToolHandler.listDocsTools()).some(tool => tool.name === request.params.name);
+        ((await this.docsToolHandler.listDocsTools()).some(tool => tool.name === request.params.name) ||
+          LEGACY_DOCS_TOOL_NAMES.has(request.params.name));
 
       // Check if this is a Reports tool
       const reportsTools = await this.reportsToolHandler.listReportsTools();
-      const isReportsTool = reportsTools.some(tool => tool.name === request.params.name);
+      const isReportsTool = reportsTools.some(tool => tool.name === request.params.name) ||
+        LEGACY_REPORT_TOOL_NAMES.has(request.params.name);
 
       if (isDocsTool) {
         // Delegate to Docs tool handler
@@ -835,13 +863,16 @@ export class ToolHandler {
             result = await this.getServerTime();
             break;
           case 'listAllInboxes':
-            result = await this.listAllInboxes(request.params.arguments || {});
+            result = await this.searchInboxes(request.params.arguments || {});
             break;
           case 'structuredConversationFilter':
             result = await this.structuredConversationFilter(request.params.arguments || {});
             break;
           case 'createReply':
             result = await this.createReply(request.params.arguments || {});
+            break;
+          case 'createNote':
+            result = await this.createNote(request.params.arguments || {});
             break;
           case 'getConversation':
             result = await this.getConversation(request.params.arguments || {});
@@ -861,28 +892,11 @@ export class ToolHandler {
       // Add to call history for future validation
       this.callHistory.push(request.params.name);
 
-      // Enhance result with API constraint guidance
-      const guidance = HelpScoutAPIConstraints.generateToolGuidance(
-        request.params.name,
-        JSON.parse((result.content[0] as any).text),
-        validationContext
-      );
-
-      if (guidance.length > 0) {
-        const originalContent = JSON.parse((result.content[0] as any).text);
-        originalContent.apiGuidance = guidance;
-        result.content[0] = {
-          type: 'text',
-          text: JSON.stringify(originalContent)
-        };
-      }
-
       logger.info('Tool call completed', {
         requestId,
         toolName: request.params.name,
         duration,
         validationPassed: true,
-        guidanceProvided: guidance.length > 0
       });
 
       return result;
@@ -905,9 +919,10 @@ export class ToolHandler {
     });
 
     const inboxes = response._embedded?.mailboxes || [];
-    const filteredInboxes = inboxes.filter(inbox =>
-      inbox.name.toLowerCase().includes(input.query.toLowerCase())
-    );
+    const query = input.query.trim().toLowerCase();
+    const filteredInboxes = query
+      ? inboxes.filter(inbox => inbox.name.toLowerCase().includes(query))
+      : inboxes;
 
     return {
       content: [{
@@ -1629,6 +1644,8 @@ export class ToolHandler {
         email: (thread as any).customer.email,
       } : null,
       createdAt: thread.createdAt,
+      ...((thread as any).state ? { state: (thread as any).state } : {}),
+      ...((thread as any).source?.type ? { source: { type: (thread as any).source.type } } : {}),
       ...((((thread as any)._embedded?.attachments || (thread as any).attachments)?.length > 0) ? {
         attachments: ((thread as any)._embedded?.attachments || (thread as any).attachments).map((a: any) => ({
           id: a.id,
@@ -1736,35 +1753,6 @@ export class ToolHandler {
       ],
     };
   }
-
-  private async listAllInboxes(args: unknown): Promise<CallToolResult> {
-    const input = args as { limit?: number };
-    const limit = input.limit || 100;
-
-    const response = await helpScoutClient.get<PaginatedResponse<Inbox>>('/mailboxes', {
-      page: 1,
-      size: limit,
-    });
-
-    const inboxes = response._embedded?.mailboxes || [];
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            inboxes: isVerbose(args) ? inboxes : inboxes.map(inbox => ({
-              id: inbox.id,
-              name: inbox.name,
-              email: inbox.email,
-            })),
-            totalInboxes: inboxes.length,
-          }),
-        },
-      ],
-    };
-  }
-
 
   /**
    * Calculate time range for search
@@ -2188,6 +2176,37 @@ export class ToolHandler {
           message: isDraft
             ? 'Draft reply created successfully. It can be reviewed and sent from Help Scout.'
             : 'Reply sent successfully.',
+        }),
+      }],
+    };
+  }
+  /**
+   * Create an internal note on a conversation
+   */
+  private async createNote(args: unknown): Promise<CallToolResult> {
+    const input = CreateNoteInputSchema.parse(args);
+
+    const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+
+    const requestBody: Record<string, unknown> = { text };
+    if (input.user !== undefined) requestBody.user = input.user;
+    if (input.status !== undefined) requestBody.status = input.status;
+
+    const response = await helpScoutClient.postWithResponse(
+      `/conversations/${input.conversationId}/notes`,
+      requestBody
+    );
+
+    const threadId = response.headers['resource-id'] || null;
+
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          success: true,
+          conversationId: input.conversationId,
+          threadId,
+          message: 'Internal note created successfully.',
         }),
       }],
     };

@@ -81,7 +81,7 @@ export const ThreadSchema = z.object({
 
 // MCP Tool Input Schemas
 export const SearchInboxesInputSchema = z.object({
-  query: z.string(),
+  query: z.string().default(''),
   limit: z.number().min(1).max(100).default(50),
   cursor: z.string().optional(),
 });
@@ -293,7 +293,7 @@ export const ListDocsArticlesInputSchema = z.object({
   status: z.enum(['all', 'published', 'notpublished']).default('all'),
   sort: z.enum(['number', 'status', 'name', 'popularity', 'createdAt', 'updatedAt']).default('createdAt'),
   order: z.enum(['asc', 'desc']).default('desc'),
-  pageSize: z.number().min(1).max(100).default(50),
+  pageSize: z.number().min(1).max(100).default(100),
 });
 
 export const GetDocsArticleInputSchema = z.object({
@@ -347,6 +347,16 @@ export const CreateReplyInputSchema = z.object({
 });
 
 export type CreateReplyInput = z.infer<typeof CreateReplyInputSchema>;
+
+// Note Input Schema
+export const CreateNoteInputSchema = z.object({
+  conversationId: z.string(),
+  text: z.string(),
+  user: z.number().optional(),
+  status: z.enum(['active', 'closed', 'open', 'pending', 'spam']).optional(),
+});
+
+export type CreateNoteInput = z.infer<typeof CreateNoteInputSchema>;
 
 // Get Conversation Schema
 export const GetConversationInputSchema = z.object({

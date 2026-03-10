@@ -15,8 +15,12 @@
     "getConversationSummary",
     "getThreads",
     "searchInboxes",
-    "listAllInboxes",
-    "getServerTime"
+    "getServerTime",
+    "createReply",
+    "createNote",
+    "getConversation",
+    "createConversation",
+    "updateConversation"
   ],
   "prompts": [
     "summarize-latest-tickets",
