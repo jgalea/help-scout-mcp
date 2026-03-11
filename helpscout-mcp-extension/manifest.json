@@ -128,16 +128,16 @@
       "description": "Search Help Scout inboxes by name"
     },
     {
-      "name": "listAllInboxes",
-      "description": "List all accessible inboxes with their IDs"
-    },
-    {
       "name": "getServerTime",
       "description": "Get current server time for date-relative queries"
     },
     {
       "name": "createReply",
       "description": "Create a draft or published reply on a conversation with HTML formatting optimized for Help Scout"
+    },
+    {
+      "name": "createNote",
+      "description": "Create an internal note on a conversation"
     },
     {
       "name": "getConversation",

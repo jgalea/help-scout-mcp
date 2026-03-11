@@ -2,6 +2,7 @@ import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
 import { isVerbose } from '../utils/config.js';
+import { compactTool } from './tool-utils.js';
 import { z } from 'zod';
 
 /**
@@ -37,6 +38,12 @@ const REPORTS_TOOL_CONSTANTS = {
   } as const,
 } as const;
 
+const REPORT_TOOL_DESCRIPTIONS: Record<string, string> = {
+  getTopArticles: 'Get top Docs articles by views.',
+  getReport: 'Get a Help Scout report by type.',
+  getHappinessRatings: 'Get individual happiness ratings.',
+};
+
 /**
  * Input schemas for Reports tools
  */
@@ -61,6 +68,20 @@ const BaseReportSchema = z.object({
     .describe('Start date for comparison period (ISO 8601)'),
   previousEnd: z.string().datetime().optional()
     .describe('End date for comparison period (ISO 8601)'),
+});
+
+const ReportTypeSchema = z.enum(['chat', 'email', 'phone', 'user', 'company', 'happiness', 'docs']);
+const GetReportInputSchema = BaseReportSchema.extend({
+  type: ReportTypeSchema,
+  mailboxes: z.array(z.string()).optional(),
+  folders: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
+  types: z.array(z.enum(['email', 'chat', 'phone'])).optional(),
+  viewBy: z.enum(['day', 'week', 'month']).optional(),
+  user: z.string().optional(),
+  officeHours: z.boolean().optional(),
+  rating: z.array(z.enum(['great', 'ok', 'not-good'])).optional(),
+  sites: z.array(z.string()).optional(),
 });
 
 // Schema for conversation-related reports (chat, email, phone)
@@ -315,6 +336,9 @@ export interface TopArticle {
   lastViewedAt?: string;
 }
 
+type ReportType = z.infer<typeof ReportTypeSchema>;
+type GetReportInput = z.infer<typeof GetReportInputSchema>;
+
 export class ReportsToolHandler extends Injectable {
   constructor(container?: ServiceContainer) {
     super(container);
@@ -324,10 +348,10 @@ export class ReportsToolHandler extends Injectable {
    * List all Reports-related tools
    */
   async listReportsTools(): Promise<Tool[]> {
-    return [
+    const tools: Tool[] = [
       {
         name: 'getTopArticles',
-        description: 'Get the most viewed Help Scout Docs articles sorted by popularity using the Docs API. Works with all Help Scout plans that have Docs enabled.',
+        description: REPORT_TOOL_DESCRIPTIONS.getTopArticles,
         inputSchema: {
           type: 'object',
           properties: {
@@ -357,194 +381,45 @@ export class ReportsToolHandler extends Injectable {
         },
       },
       {
-        name: 'getChatReport',
-        description: 'Get Help Scout chat conversation analytics report with volume, response times, and resolution metrics. Requires Plus or Pro plan.',
+        name: 'getReport',
+        description: REPORT_TOOL_DESCRIPTIONS.getReport,
         inputSchema: {
           type: 'object',
           properties: {
+            type: {
+              type: 'string',
+              enum: ['chat', 'email', 'phone', 'user', 'company', 'happiness', 'docs'],
+            },
             start: {
               type: 'string',
               format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
             },
             end: {
               type: 'string',
               format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
             },
             previousStart: {
               type: 'string',
               format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
             },
             previousEnd: {
               type: 'string',
               format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
             },
             mailboxes: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
             },
             folders: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Filter by specific folder IDs',
             },
             tags: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
-            },
-            viewBy: {
-              type: 'string',
-              enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getEmailReport',
-        description: 'Get Help Scout email conversation analytics report with volume, response times, and resolution metrics. Requires Plus or Pro plan.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
-            },
-            mailboxes: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
-            },
-            folders: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific folder IDs',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
-            },
-            viewBy: {
-              type: 'string',
-              enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getPhoneReport',
-        description: 'Get Help Scout phone conversation analytics report with call volume and duration metrics. Requires Plus or Pro plan.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
-            },
-            mailboxes: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
-            },
-            folders: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific folder IDs',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
-            },
-            viewBy: {
-              type: 'string',
-              enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getUserReport',
-        description: 'Get Help Scout user/team performance report with productivity metrics, response times, and happiness scores. Requires Plus or Pro plan.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
             },
             user: {
               type: 'string',
-              description: 'User ID for individual report',
-            },
-            mailboxes: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
             },
             types: {
               type: 'array',
@@ -552,122 +427,13 @@ export class ReportsToolHandler extends Injectable {
                 type: 'string',
                 enum: ['email', 'chat', 'phone'],
               },
-              description: 'Filter by conversation types',
             },
             viewBy: {
               type: 'string',
               enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
             },
             officeHours: {
               type: 'boolean',
-              description: 'Filter by office hours only',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getCompanyReport',
-        description: 'Get Help Scout company-wide analytics report with customer volume, conversation metrics, and team performance. Requires Plus or Pro plan.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
-            },
-            mailboxes: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
-            },
-            types: {
-              type: 'array',
-              items: { 
-                type: 'string',
-                enum: ['email', 'chat', 'phone'],
-              },
-              description: 'Filter by conversation types',
-            },
-            viewBy: {
-              type: 'string',
-              enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getHappinessReport',
-        description: 'Get Help Scout overall happiness report with aggregate satisfaction scores. Requires Plus or Pro plan.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
-            },
-            mailboxes: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
-            },
-            folders: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific folder IDs',
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
-            },
-            types: {
-              type: 'array',
-              items: { 
-                type: 'string',
-                enum: ['email', 'chat', 'phone'],
-              },
-              description: 'Filter by conversation types',
             },
             rating: {
               type: 'array',
@@ -675,50 +441,43 @@ export class ReportsToolHandler extends Injectable {
                 type: 'string',
                 enum: ['great', 'ok', 'not-good'],
               },
-              description: 'Filter by specific ratings (note: API uses "ok" and "not-good")',
             },
-            viewBy: {
-              type: 'string',
-              enum: ['day', 'week', 'month'],
-              description: 'Group results by time period',
+            sites: {
+              type: 'array',
+              items: { type: 'string' },
             },
           },
-          required: ['start', 'end'],
+          required: ['type', 'start', 'end'],
         },
       },
       {
         name: 'getHappinessRatings',
-        description: 'Get individual Help Scout happiness ratings with customer feedback and comments. Requires Plus or Pro plan.',
+        description: REPORT_TOOL_DESCRIPTIONS.getHappinessRatings,
         inputSchema: {
           type: 'object',
           properties: {
             start: {
               type: 'string',
               format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
             },
             end: {
               type: 'string',
               format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
             },
             mailboxes: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Filter by specific mailbox IDs',
             },
             tags: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Filter by specific tag IDs',
             },
             types: {
               type: 'array',
-              items: { 
+              items: {
                 type: 'string',
                 enum: ['email', 'chat', 'phone'],
               },
-              description: 'Filter by conversation types',
             },
             rating: {
               type: 'array',
@@ -726,66 +485,29 @@ export class ReportsToolHandler extends Injectable {
                 type: 'string',
                 enum: ['great', 'ok', 'not-good', 'all'],
               },
-              description: 'Filter by specific ratings (note: uses ok and not-good instead of okay and bad)',
             },
             page: {
               type: 'number',
               minimum: 1,
               default: 1,
-              description: 'Page number for pagination',
             },
             sortField: {
               type: 'string',
               enum: ['rating', 'createdAt', 'modifiedAt'],
               default: 'createdAt',
-              description: 'Field to sort by',
             },
             sortOrder: {
               type: 'string',
               enum: ['asc', 'desc'],
               default: 'desc',
-              description: 'Sort order',
-            },
-          },
-          required: ['start', 'end'],
-        },
-      },
-      {
-        name: 'getDocsReport',
-        description: 'Get Help Scout Docs analytics report with article views, visitor metrics, and content updates. Requires Plus or Pro plan with Docs enabled.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            start: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for the report period (ISO 8601)',
-            },
-            end: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for the report period (ISO 8601)',
-            },
-            previousStart: {
-              type: 'string',
-              format: 'date-time',
-              description: 'Start date for comparison period (ISO 8601)',
-            },
-            previousEnd: {
-              type: 'string',
-              format: 'date-time',
-              description: 'End date for comparison period (ISO 8601)',
-            },
-            sites: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by specific Docs site IDs',
             },
           },
           required: ['start', 'end'],
         },
       },
     ];
+
+    return tools.map(tool => compactTool(tool, REPORT_TOOL_DESCRIPTIONS[tool.name]));
   }
 
   /**
@@ -810,29 +532,18 @@ export class ReportsToolHandler extends Injectable {
         case 'getTopArticles':
           result = await this.getTopArticles(request.params.arguments || {});
           break;
+        case 'getReport':
         case 'getChatReport':
-          result = await this.getChatReport(request.params.arguments || {});
-          break;
         case 'getEmailReport':
-          result = await this.getEmailReport(request.params.arguments || {});
-          break;
         case 'getPhoneReport':
-          result = await this.getPhoneReport(request.params.arguments || {});
-          break;
         case 'getUserReport':
-          result = await this.getUserReport(request.params.arguments || {});
-          break;
         case 'getCompanyReport':
-          result = await this.getCompanyReport(request.params.arguments || {});
-          break;
         case 'getHappinessReport':
-          result = await this.getHappinessReport(request.params.arguments || {});
+        case 'getDocsReport':
+          result = await this.getReport(this.withReportType(request.params.name, request.params.arguments || {}));
           break;
         case 'getHappinessRatings':
           result = await this.getHappinessRatings(request.params.arguments || {});
-          break;
-        case 'getDocsReport':
-          result = await this.getDocsReport(request.params.arguments || {});
           break;
         default:
           throw new Error(`Unknown Reports tool: ${request.params.name}`);
@@ -1023,459 +734,151 @@ export class ReportsToolHandler extends Injectable {
     }
   }
 
-  private async getDocsReport(args: unknown): Promise<CallToolResult> {
-    const input = GetDocsReportInputSchema.parse(args);
+  private withReportType(name: string, args: unknown): unknown {
+    const payload = (args && typeof args === 'object') ? { ...(args as Record<string, unknown>) } : {};
+    const aliasToType: Record<string, ReportType> = {
+      getChatReport: 'chat',
+      getEmailReport: 'email',
+      getPhoneReport: 'phone',
+      getUserReport: 'user',
+      getCompanyReport: 'company',
+      getHappinessReport: 'happiness',
+      getDocsReport: 'docs',
+    };
+
+    return payload.type ? payload : { ...payload, type: aliasToType[name] };
+  }
+
+  private buildBaseParams(input: GetReportInput): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      start: input.start,
+      end: input.end,
+    };
+
+    if (input.previousStart && input.previousEnd) {
+      params.previousStart = input.previousStart;
+      params.previousEnd = input.previousEnd;
+    }
+
+    return params;
+  }
+
+  private addCsvParam(params: Record<string, unknown>, key: string, values?: string[]): void {
+    if (values && values.length > 0) {
+      params[key] = values.join(',');
+    }
+  }
+
+  private async getReport(args: unknown): Promise<CallToolResult> {
+    const input = GetReportInputSchema.parse(args);
     const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
+    const params = this.buildBaseParams(input);
+
+    let endpoint = '';
+    let errorLabel = '';
+
+    switch (input.type) {
+      case 'chat':
+      case 'email':
+      case 'phone':
+        endpoint = `/reports/${input.type}`;
+        errorLabel = `${input.type[0].toUpperCase()}${input.type.slice(1)} report`;
+        this.addCsvParam(params, 'mailboxes', input.mailboxes);
+        this.addCsvParam(params, 'folders', input.folders);
+        this.addCsvParam(params, 'tags', input.tags);
+        if (input.viewBy) params.viewBy = input.viewBy;
+        break;
+      case 'user':
+        endpoint = '/reports/user';
+        errorLabel = 'User report';
+        if (input.user) params.user = input.user;
+        this.addCsvParam(params, 'mailboxes', input.mailboxes);
+        this.addCsvParam(params, 'tags', input.tags);
+        this.addCsvParam(params, 'types', input.types);
+        if (input.viewBy) params.viewBy = input.viewBy;
+        if (input.officeHours !== undefined) params.officeHours = input.officeHours;
+        break;
+      case 'company':
+        endpoint = '/reports/company';
+        errorLabel = 'Company report';
+        this.addCsvParam(params, 'mailboxes', input.mailboxes);
+        this.addCsvParam(params, 'tags', input.tags);
+        this.addCsvParam(params, 'types', input.types);
+        if (input.viewBy) params.viewBy = input.viewBy;
+        break;
+      case 'happiness':
+        endpoint = '/reports/happiness';
+        errorLabel = 'Happiness report';
+        this.addCsvParam(params, 'mailboxes', input.mailboxes);
+        this.addCsvParam(params, 'folders', input.folders);
+        this.addCsvParam(params, 'tags', input.tags);
+        this.addCsvParam(params, 'types', input.types);
+        this.addCsvParam(params, 'rating', input.rating);
+        if (input.viewBy) params.viewBy = input.viewBy;
+        break;
+      case 'docs':
+        endpoint = '/reports/docs';
+        errorLabel = 'Docs report';
+        params.resolution = 'day';
+        this.addCsvParam(params, 'sites', input.sites);
+        break;
+    }
+
     try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-        resolution: 'day',
-      };
+      logger.info('Calling Help Scout Reports API', { endpoint, params, type: input.type });
 
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
+      if (input.type === 'docs') {
+        let response: unknown = null;
+        try {
+          response = await reportsApiClient.getReport<DocsReportResponse>(endpoint, params);
+        } catch (error: unknown) {
+          logger.error('Failed to get docs report', { error: error instanceof Error ? error.message : String(error) });
+        }
 
-      if (input.sites && input.sites.length > 0) {
-        params.sites = input.sites.join(',');
-      }
+        if (!response || response === 'Unknown URL' || typeof response !== 'object' || !('current' in response)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: 'Docs Reports endpoint not found. The /v2/reports/docs endpoint may not be available for your plan.',
+                }),
+              },
+            ],
+          };
+        }
 
-      logger.info('Calling Help Scout Reports API for Docs report', { endpoint: '/reports/docs', params });
-      
-      let response: any;
-      try {
-        response = await reportsApiClient.getReport<DocsReportResponse>('/reports/docs', params);
-      } catch (error: unknown) {
-        logger.error('Failed to get docs report', { error: error instanceof Error ? error.message : String(error) });
-        response = null;
-      }
-      
-      // Check if we got a valid response
-      if (!response || response === 'Unknown URL' || (typeof response === 'string') || !response.current) {
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify({
-                error: 'Docs Reports endpoint not found. The /v2/reports/docs endpoint may not be available for your plan.',
-              }),
+              text: JSON.stringify({ report: response as DocsReportResponse }),
             },
           ],
         };
       }
 
+      const response = await reportsApiClient.getReport<
+        ConversationReportResponse | UserReportResponse | CompanyReportResponse | HappinessReportResponse
+      >(endpoint, params);
+
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
+            text: JSON.stringify({ report: response }),
           },
         ],
       };
     } catch (error) {
-      logger.error('Docs Reports API error', { error });
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Docs report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getChatReport(args: unknown): Promise<CallToolResult> {
-    const input = GetConversationReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.folders && input.folders.length > 0) {
-        params.folders = input.folders.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      logger.info('Calling Help Scout Reports API for Chat report', { endpoint: '/reports/chat', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/chat', params);
+      logger.error('Reports API error', { error, type: input.type });
 
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Chat Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Chat report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getEmailReport(args: unknown): Promise<CallToolResult> {
-    const input = GetConversationReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.folders && input.folders.length > 0) {
-        params.folders = input.folders.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      logger.info('Calling Help Scout Reports API for Email report', { endpoint: '/reports/email', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/email', params);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Email Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Email report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getPhoneReport(args: unknown): Promise<CallToolResult> {
-    const input = GetConversationReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.folders && input.folders.length > 0) {
-        params.folders = input.folders.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      logger.info('Calling Help Scout Reports API for Phone report', { endpoint: '/reports/phone', params });
-      const response = await reportsApiClient.getReport<ConversationReportResponse>('/reports/phone', params);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Phone Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Phone report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getUserReport(args: unknown): Promise<CallToolResult> {
-    const input = GetUserReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.user) {
-        params.user = input.user;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.types && input.types.length > 0) {
-        params.types = input.types.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      if (input.officeHours !== undefined) {
-        params.officeHours = input.officeHours;
-      }
-
-      logger.info('Calling Help Scout Reports API for User report', { endpoint: '/reports/user', params });
-      const response = await reportsApiClient.getReport<UserReportResponse>('/reports/user', params);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('User Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch User report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getCompanyReport(args: unknown): Promise<CallToolResult> {
-    const input = GetCompanyReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.types && input.types.length > 0) {
-        params.types = input.types.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      logger.info('Calling Help Scout Reports API for Company report', { endpoint: '/reports/company', params });
-      const response = await reportsApiClient.getReport<CompanyReportResponse>('/reports/company', params);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Company Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Company report',
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          },
-        ],
-      };
-    }
-  }
-
-  private async getHappinessReport(args: unknown): Promise<CallToolResult> {
-    const input = GetHappinessReportInputSchema.parse(args);
-    const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
-    
-    try {
-      // Build query parameters
-      const params: Record<string, unknown> = {
-        start: input.start,
-        end: input.end,
-      };
-
-      if (input.previousStart && input.previousEnd) {
-        params.previousStart = input.previousStart;
-        params.previousEnd = input.previousEnd;
-      }
-
-      if (input.mailboxes && input.mailboxes.length > 0) {
-        params.mailboxes = input.mailboxes.join(',');
-      }
-
-      if (input.folders && input.folders.length > 0) {
-        params.folders = input.folders.join(',');
-      }
-
-      if (input.tags && input.tags.length > 0) {
-        params.tags = input.tags.join(',');
-      }
-
-      if (input.types && input.types.length > 0) {
-        params.types = input.types.join(',');
-      }
-
-      if (input.rating && input.rating.length > 0) {
-        params.rating = input.rating.join(',');
-      }
-
-      if (input.viewBy) {
-        params.viewBy = input.viewBy;
-      }
-
-      // The happiness report endpoint - overall statistics
-      logger.info('Calling Help Scout Reports API for Happiness report', { endpoint: '/reports/happiness', params });
-      const response = await reportsApiClient.getReport<HappinessReportResponse>('/reports/happiness', params);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              report: response,
-            }),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('Happiness Reports API error', { error });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Failed to fetch Happiness report',
+              error: `Failed to fetch ${errorLabel}`,
               message: error instanceof Error ? error.message : String(error),
             }),
           },

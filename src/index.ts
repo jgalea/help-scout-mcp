@@ -93,7 +93,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
 | Lookup by ticket number (#12345) | structuredConversationFilter |
 | Get full conversation thread | getThreads |
 | Quick conversation preview | getConversationSummary |${docsRow}
-| Get report data | getConversationReport, getHappinessReport |
+| Get report data | getReport, getHappinessRatings |
 
 ## Workflow Patterns
 - **Summarize latest tickets**: searchConversations with includeTranscripts:true (single call, returns conversations + message transcripts)
@@ -120,7 +120,7 @@ ${inboxes.length > 0 ? inboxList : '  No inboxes found - check API credentials'}
       return {
         instructions: `Help Scout MCP Server - Read-only access to conversations.
 
-Note: Inbox auto-discovery failed (${safeError}). Use listAllInboxes tool to see available inboxes.`,
+Note: Inbox auto-discovery failed (${safeError}). Use searchInboxes with an empty query to see available inboxes.`,
         inboxes: [],
       };
     }

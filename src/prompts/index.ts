@@ -122,7 +122,7 @@ export class PromptHandler {
 ## Inbox IDs Are Auto-Discovered
 
 Available inboxes and their IDs are listed in the server instructions (sent at connection time).
-Use those IDs directly — no need to call listAllInboxes first unless the instructions show no inboxes.
+Use those IDs directly — no need to call searchInboxes unless the instructions show no inboxes.
 
 ## Tool Selection Guide
 
@@ -136,7 +136,7 @@ Use those IDs directly — no need to call listAllInboxes first unless the instr
 | Get full conversation thread | getThreads |
 | Quick conversation preview | getConversationSummary |
 | Browse/search Docs articles | listDocsArticles, searchDocsArticles |
-| Get report data | getConversationReport, getHappinessReport |
+| Get report data | getReport, getHappinessRatings |
 
 ## Workflow Patterns
 
@@ -155,7 +155,7 @@ with searchConversations (using searchTerms), then combine and present results.
 1. Try broader search terms
 2. Extend the timeframe (default is 60 days)
 3. Check different statuses (active, pending, closed)
-4. Verify inbox ID is correct using listAllInboxes
+4. Verify inbox ID is correct using searchInboxes
 
 ### Scenario 3: General Search Without Inbox Mention
 Use searchConversations with searchTerms (no inboxId) to search across ALL accessible inboxes.
