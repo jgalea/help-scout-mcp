@@ -43,22 +43,29 @@
 - **Node.js 18+** (for command line usage)
 - **Help Scout Account** with API access
 - **OAuth2 App** from Help Scout (Personal Access Tokens are no longer supported)
-- **Claude Desktop** (for MCPB installation) or any MCP-compatible client
+- **Claude Code**, **Claude Desktop**, or any MCP-compatible client
 
 > **Note**: The MCPB extension bundles all dependencies, so no local Node.js installation needed for Claude Desktop users.
 
 ## Quick Start
 
-### 🎯 Option 1: Claude Desktop (MCPB One-Click Install)
+### ⚡ Option 1: Claude Code (Easiest)
 
-**Easiest setup using [MCP Bundles](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
+The fastest way to get started — just ask Claude to install it:
 
-1. Download the latest [`.mcpb` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
-2. Double-click to install in Claude Desktop
-3. Enter your Help Scout App ID and App Secret when prompted
-4. Start using immediately!
+```
+claude "Install the @gravitykit/help-scout-mcp MCP server"
+```
 
-### 📋 Option 2: Claude Desktop (Manual Config)
+Claude Code will add it to your project's `.mcp.json` automatically. When prompted, provide your Help Scout App ID and App Secret.
+
+You can also add it manually:
+
+```bash
+claude mcp add helpscout -- npx @gravitykit/help-scout-mcp
+```
+
+Then set your credentials in `.mcp.json`:
 
 ```json
 {
@@ -75,7 +82,33 @@
 }
 ```
 
-### 💻 Option 3: Command Line
+### 🎯 Option 2: Claude Desktop (MCPB One-Click Install)
+
+**Easiest setup using [MCP Bundles](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
+
+1. Download the latest [`.mcpb` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
+2. Double-click to install in Claude Desktop
+3. Enter your Help Scout App ID and App Secret when prompted
+4. Start using immediately!
+
+### 📋 Option 3: Claude Desktop (Manual Config)
+
+```json
+{
+  "mcpServers": {
+    "helpscout": {
+      "command": "npx",
+      "args": ["@gravitykit/help-scout-mcp"],
+      "env": {
+        "HELPSCOUT_APP_ID": "your-app-id",
+        "HELPSCOUT_APP_SECRET": "your-app-secret"
+      }
+    }
+  }
+}
+```
+
+### 💻 Option 4: Command Line
 
 ```bash
 HELPSCOUT_APP_ID="your-app-id" \
