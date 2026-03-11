@@ -767,9 +767,12 @@ export class ToolHandler {
     // Get Reports tools from the Reports handler
     const reportsTools = await this.reportsToolHandler.listReportsTools();
 
-    return [...conversationTools, ...docsTools, ...reportsTools].map(tool =>
+    const compactedConversationTools = conversationTools.map(tool =>
       compactTool(tool, CONVERSATION_TOOL_DESCRIPTIONS[tool.name])
     );
+
+    // Docs and reports tools are already compacted by their own handlers
+    return [...compactedConversationTools, ...docsTools, ...reportsTools];
   }
 
   async callTool(request: CallToolRequest): Promise<CallToolResult> {
