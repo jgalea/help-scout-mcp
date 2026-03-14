@@ -493,13 +493,13 @@ export class ReportsToolHandler extends Injectable {
             },
             sortField: {
               type: 'string',
-              enum: ['rating', 'createdAt', 'modifiedAt'],
-              default: 'createdAt',
+              enum: ['rating', 'number', 'modifiedAt'],
+              default: 'rating',
             },
             sortOrder: {
               type: 'string',
-              enum: ['asc', 'desc'],
-              default: 'desc',
+              enum: ['ASC', 'DESC'],
+              default: 'DESC',
             },
           },
           required: ['start', 'end'],
@@ -896,8 +896,8 @@ export class ReportsToolHandler extends Injectable {
       types: z.array(z.enum(['email', 'chat', 'phone'])).optional(),
       rating: z.array(z.enum(['great', 'ok', 'not-good', 'all'])).optional(),
       page: z.number().min(1).default(1),
-      sortField: z.enum(['rating', 'createdAt', 'modifiedAt']).default('createdAt'),
-      sortOrder: z.enum(['asc', 'desc']).default('desc'),
+      sortField: z.enum(['rating', 'number', 'modifiedAt']).default('rating'),
+      sortOrder: z.enum(['ASC', 'DESC']).default('DESC'),
     }).parse(args);
     
     const { reportsApiClient, logger } = this.services.resolve(['reportsApiClient', 'logger']);
