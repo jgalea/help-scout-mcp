@@ -10,6 +10,7 @@ import { logger } from '../utils/logger.js';
 import { config, isVerbose } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
 import { z } from 'zod';
+import TurndownService from 'turndown';
 
 /**
  * Constants for tool operations
@@ -1456,26 +1457,72 @@ export class ToolHandler {
   }
 
   /**
-   * Strip HTML tags and collapse whitespace for transcript output.
+   * Shared TurndownService instance for HTML → Markdown conversion.
    */
-  private stripHtml(html: string): string {
-    return html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n')
-      .replace(/<\/div>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/&amp;/gi, '&')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
+  private static turndown: TurndownService = (() => {
+    const td = new TurndownService({
+      headingStyle: 'atx',
+      bulletListMarker: '-',
+      codeBlockStyle: 'fenced',
+      hr: '---',
+    });
+
+    // Convert <img> to markdown with alt text and src
+    td.addRule('images', {
+      filter: 'img',
+      replacement(_content, node) {
+        const el = node as HTMLElement;
+        const alt = el.getAttribute('alt') || '';
+        const src = el.getAttribute('src') || '';
+        if (!src) return '';
+        return `![${alt}](${src})`;
+      },
+    });
+
+    // Treat bare <pre> (without <code> child) as fenced code blocks
+    td.addRule('bare-pre', {
+      filter(node) {
+        return node.nodeName === 'PRE'
+          && !(node as HTMLElement).querySelector('code');
+      },
+      replacement(_content, node) {
+        const text = (node as HTMLElement).textContent || '';
+        return `\n\n\`\`\`\n${text.trim()}\n\`\`\`\n\n`;
+      },
+    });
+
+    // Convert <s>, <del>, <strike> to ~~strikethrough~~
+    td.addRule('strikethrough', {
+      filter: ['del', 's', 'strike'] as any,
+      replacement(_content, node) {
+        const text = (node as HTMLElement).textContent || '';
+        return text ? `~~${text}~~` : '';
+      },
+    });
+
+    // Strip Help Scout signatures and style/script tags entirely
+    td.addRule('helpscout-signature', {
+      filter(node) {
+        return node.nodeName === 'DIV'
+          && (node as HTMLElement).classList?.contains('helpscout-signature') === true;
+      },
+      replacement() { return ''; },
+    });
+    td.remove(['style', 'script']);
+
+    return td;
+  })();
+
+  /**
+   * Convert HTML to Markdown for transcript output, then clean up whitespace.
+   */
+  private htmlToMarkdown(html: string): string {
+    const md = ToolHandler.turndown.turndown(html);
+    return md
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n')
-      .replace(/\t/g, ' ')
-      .replace(/ {2,}/g, ' ')
       .replace(/\n{3,}/g, '\n\n')
-      .split('\n').map(line => line.trim()).join('\n')
+      .split('\n').map(line => line.trimEnd()).join('\n')
       .trim();
   }
 
@@ -1516,7 +1563,7 @@ export class ToolHandler {
       const role = isCustomer ? 'customer' : 'staff';
       const rawBody = t.body || '';
       const body = config.security.allowPii
-        ? this.stripHtml(this.cleanBeaconForm(rawBody))
+        ? this.htmlToMarkdown(this.cleanBeaconForm(rawBody))
         : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]';
 
       return {
