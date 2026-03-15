@@ -11,6 +11,7 @@ import { config, isVerbose } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
 import { z } from 'zod';
 import TurndownService from 'turndown';
+import { detectMimeType, extForMime, isImageMime } from '../utils/mime.js';
 
 /**
  * Constants for tool operations
@@ -1514,16 +1515,10 @@ export class ToolHandler {
   })();
 
   /**
-   * Convert HTML to Markdown for transcript output, then clean up whitespace.
+   * Convert HTML to Markdown for transcript output.
    */
   private htmlToMarkdown(html: string): string {
-    const md = ToolHandler.turndown.turndown(html);
-    return md
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .split('\n').map(line => line.trimEnd()).join('\n')
-      .trim();
+    return ToolHandler.turndown.turndown(html);
   }
 
   /**
@@ -1535,7 +1530,6 @@ export class ToolHandler {
     from: string;
     date: string;
     body: string;
-    attachments?: number;
   }> {
     const dialogueThreads = threads.filter(t => {
       const type = (t as any).type;
@@ -1566,21 +1560,26 @@ export class ToolHandler {
         ? this.htmlToMarkdown(this.cleanBeaconForm(rawBody))
         : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]';
 
+      // Render attachments as inline markdown
+      const rawAttachments = (t as any)._embedded?.attachments || (t as any).attachments || [];
+      let fullBody = body;
+      if (rawAttachments.length > 0) {
+        const attachmentLines = rawAttachments.map((a: any) => {
+          const filename = a.filename || a.fileName || 'attachment';
+          const isImage = (a.mimeType || '').startsWith('image/');
+          const dims = isImage && a.width && a.height ? ` (${a.width}x${a.height})` : '';
+          return isImage
+            ? `![${filename}${dims}](attachment:${a.id})`
+            : `[${filename}](attachment:${a.id})`;
+        });
+        fullBody += '\n\n' + attachmentLines.join('\n');
+      }
+
       return {
         role,
         from: name,
         date: t.createdAt,
-        body,
-        ...((((t as any)._embedded?.attachments || (t as any).attachments)?.length > 0) ? {
-          attachments: ((t as any)._embedded?.attachments || (t as any).attachments).map((a: any) => ({
-            id: a.id,
-            filename: a.filename || a.fileName,
-            mimeType: a.mimeType,
-            size: a.size,
-            width: a.width,
-            height: a.height,
-          }))
-        } : {}),
+        body: fullBody,
       };
     });
   }
@@ -1746,23 +1745,41 @@ export class ToolHandler {
       const buffer = Buffer.from(response.data, 'base64');
       const filename = input.filename || `attachment-${input.attachmentId}`;
 
-      // Write to temp file
-      const fs = await import('fs');
+      // Detect mime type and prepare file path
       const path = await import('path');
+      const ext = path.extname(filename).toLowerCase();
+      const mimeType = detectMimeType(buffer, ext);
+
+      // For images, return as native MCP image content so the AI can see them directly
+      if (isImageMime(mimeType)) {
+        return {
+          content: [
+            {
+              type: 'image' as const,
+              data: response.data,
+              mimeType,
+            },
+            {
+              type: 'text',
+              text: JSON.stringify({
+                attachmentId: input.attachmentId,
+                conversationId: input.conversationId,
+                filename,
+                size: buffer.length,
+                mimeType,
+              }),
+            },
+          ],
+        };
+      }
+
+      // For non-images, write to temp file with correct extension
+      const fs = await import('fs');
       const dir = path.join('/tmp', 'helpscout-attachments', input.conversationId);
       fs.mkdirSync(dir, { recursive: true });
-      const filePath = path.join(dir, filename);
+      const missingExt = !ext ? extForMime(mimeType) : '';
+      const filePath = path.join(dir, `${filename}${missingExt}`);
       fs.writeFileSync(filePath, buffer);
-
-      // Detect mime type from extension
-      const ext = path.extname(filename).toLowerCase();
-      const mimeMap: Record<string, string> = {
-        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-        '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf',
-        '.zip': 'application/zip', '.csv': 'text/csv', '.json': 'application/json',
-        '.xml': 'application/xml', '.txt': 'text/plain', '.log': 'text/plain',
-        '.html': 'text/html', '.htm': 'text/html',
-      };
 
       return {
         content: [{
@@ -1773,8 +1790,8 @@ export class ToolHandler {
             filename,
             filePath,
             size: buffer.length,
-            mimeType: mimeMap[ext] || 'application/octet-stream',
-            hint: 'Use the Read tool on filePath to view this file. Claude can natively view images (PNG, JPG, GIF, WEBP) and PDFs. For ZIP files, use Bash: unzip -l to list contents.',
+            mimeType,
+            hint: 'Use the Read tool on filePath to view this file. For PDFs, use Read with pages parameter. For ZIP files, use Bash: unzip -l to list contents.',
           }),
         }],
       };
