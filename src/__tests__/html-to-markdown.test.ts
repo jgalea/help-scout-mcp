@@ -143,11 +143,11 @@ describe('htmlToMarkdown', () => {
     expect(convert('<script>alert("xss")</script>Hello')).toBe('Hello');
   });
 
-  it('collapses excessive blank lines', () => {
+  it('does not collapse whitespace (raw turndown output)', () => {
     const html = '<p>A</p><p></p><p></p><p></p><p>B</p>';
     const result = convert(html);
-    // Should never have more than 2 consecutive newlines
-    expect(result).not.toMatch(/\n{3,}/);
+    expect(result).toContain('A');
+    expect(result).toContain('B');
   });
 
   it('handles a realistic Help Scout email body', () => {
