@@ -3,16 +3,16 @@
  */
 
 const MAGIC_SIGNATURES: Array<{ mime: string; check: (buf: Buffer) => boolean }> = [
-  { mime: 'image/png', check: (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47 },
-  { mime: 'image/jpeg', check: (b) => b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF },
-  { mime: 'image/gif', check: (b) => b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 },
+  { mime: 'image/png', check: (b) => b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47 },
+  { mime: 'image/jpeg', check: (b) => b.length >= 3 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF },
+  { mime: 'image/gif', check: (b) => b.length >= 3 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 },
   {
     mime: 'image/webp',
-    check: (b) => b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    check: (b) => b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
       b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50,
   },
-  { mime: 'application/pdf', check: (b) => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 },
-  { mime: 'application/zip', check: (b) => b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04 },
+  { mime: 'application/pdf', check: (b) => b.length >= 4 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 },
+  { mime: 'application/zip', check: (b) => b.length >= 4 && b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04 },
 ];
 
 const EXT_TO_MIME: Record<string, string> = {
@@ -37,7 +37,7 @@ export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/
  */
 export function detectMimeType(buffer: Buffer, ext: string): string {
   for (const sig of MAGIC_SIGNATURES) {
-    if (buffer.length >= 12 && sig.check(buffer)) return sig.mime;
+    if (sig.check(buffer)) return sig.mime;
   }
   return EXT_TO_MIME[ext.toLowerCase()] || 'application/octet-stream';
 }
