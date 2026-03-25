@@ -1472,7 +1472,7 @@ export class ToolHandler {
     td.addRule('images', {
       filter: 'img',
       replacement(_content, node) {
-        const el = node as HTMLElement;
+        const el = node as any;
         const alt = el.getAttribute('alt') || '';
         const src = el.getAttribute('src') || '';
         if (!src) return '';
@@ -1484,10 +1484,10 @@ export class ToolHandler {
     td.addRule('bare-pre', {
       filter(node) {
         return node.nodeName === 'PRE'
-          && !(node as HTMLElement).querySelector('code');
+          && !(node as any).querySelector('code');
       },
       replacement(_content, node) {
-        const text = (node as HTMLElement).textContent || '';
+        const text = (node as any).textContent || '';
         return `\n\n\`\`\`\n${text.trim()}\n\`\`\`\n\n`;
       },
     });
@@ -1496,7 +1496,7 @@ export class ToolHandler {
     td.addRule('strikethrough', {
       filter: ['del', 's', 'strike'] as any,
       replacement(_content, node) {
-        const text = (node as HTMLElement).textContent || '';
+        const text = (node as any).textContent || '';
         return text ? `~~${text}~~` : '';
       },
     });
@@ -1505,7 +1505,7 @@ export class ToolHandler {
     td.addRule('helpscout-signature', {
       filter(node) {
         return node.nodeName === 'DIV'
-          && (node as HTMLElement).classList?.contains('helpscout-signature') === true;
+          && (node as any).classList?.contains('helpscout-signature') === true;
       },
       replacement() { return ''; },
     });
