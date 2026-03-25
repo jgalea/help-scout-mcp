@@ -621,9 +621,9 @@ export class DocsToolHandler extends Injectable {
         inputSchema: {
           type: 'object',
           properties: {
-            draftId: { type: 'string', description: 'The draft ID to delete' },
+            articleId: { type: 'string', description: 'The article ID whose draft to delete' },
           },
-          required: ['draftId'],
+          required: ['articleId'],
         },
       },
       // Article Upload
@@ -1347,8 +1347,10 @@ export class DocsToolHandler extends Injectable {
     const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
     const verbose = isVerbose(args);
 
-    const endpoint = input.draft ? `/articles/${input.articleId}/draft` : `/articles/${input.articleId}`;
-    const article = await helpScoutDocsClient.get<DocsArticle>(endpoint);
+    const endpoint = `/articles/${input.articleId}`;
+    const params: Record<string, unknown> = {};
+    if (input.draft) params.draft = true;
+    const article = await helpScoutDocsClient.get<DocsArticle>(endpoint, params);
 
     // Verbose: return full article with all fields
     if (verbose) {
@@ -1980,7 +1982,7 @@ export class DocsToolHandler extends Injectable {
       if (input.visibility !== 'all') params.visibility = input.visibility;
       if (input.status !== 'all') params.status = input.status;
       
-      const response = await helpScoutDocsClient.get<DocsPaginatedResponse<any>>('/articles/search', params);
+      const response = await helpScoutDocsClient.get<DocsPaginatedResponse<any>>('/search/articles', params);
       
       return {
         content: [
@@ -2459,7 +2461,7 @@ export class DocsToolHandler extends Injectable {
       if (input.draft) params.draft = true;
       
       const response = await helpScoutDocsClient.get<any>(
-        `/articles/revisions/${input.revisionId}`,
+        `/revisions/${input.revisionId}`,
         params
       );
       
@@ -2505,7 +2507,7 @@ export class DocsToolHandler extends Injectable {
       };
       if (input.name) draftData.name = input.name;
       
-      const response = await helpScoutDocsClient.create<any>(
+      const response = await helpScoutDocsClient.update<any>(
         `/articles/${input.articleId}/drafts`,
         draftData
       );
@@ -2537,12 +2539,15 @@ export class DocsToolHandler extends Injectable {
   }
 
   private async deleteDocsArticleDraft(args: unknown): Promise<CallToolResult> {
+    const rawArgs = (args && typeof args === 'object') ? args as Record<string, unknown> : {};
+    // Accept legacy 'draftId' param for backward compat
+    const normalizedArgs = rawArgs.articleId ? rawArgs : rawArgs.draftId ? { articleId: rawArgs.draftId } : rawArgs;
     const input = z.object({
-      draftId: z.string(),
-    }).parse(args);
-    
+      articleId: z.string(),
+    }).parse(normalizedArgs);
+
     const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
-    
+
     if (!config.helpscout.allowDocsDelete) {
       return {
         content: [
@@ -2556,16 +2561,16 @@ export class DocsToolHandler extends Injectable {
         ],
       };
     }
-    
+
     try {
-      await helpScoutDocsClient.delete(`/articles/drafts/${input.draftId}`);
-      
+      await helpScoutDocsClient.delete(`/articles/${input.articleId}/drafts`);
+
       return {
         content: [
           {
             type: 'text',
             text: JSON.stringify({
-              draftId: input.draftId,
+              articleId: input.articleId,
             }),
           },
         ],
@@ -2578,7 +2583,7 @@ export class DocsToolHandler extends Injectable {
             text: JSON.stringify({
               error: 'Failed to delete article draft',
               message: error instanceof Error ? error.message : String(error),
-              draftId: input.draftId,
+              articleId: input.articleId,
             }),
           },
         ],
@@ -2807,8 +2812,7 @@ export class DocsToolHandler extends Injectable {
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
     
     try {
-      await helpScoutDocsClient.update('/categories/order', {
-        collectionId: input.collectionId,
+      await helpScoutDocsClient.update(`/collections/${input.collectionId}/categories`, {
         categories: input.categoryIds,
       });
       
@@ -2931,7 +2935,7 @@ export class DocsToolHandler extends Injectable {
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
     
     try {
-      const response = await helpScoutDocsClient.get<any>('/redirects/find', {
+      const response = await helpScoutDocsClient.get<any>('/redirects', {
         siteId: input.siteId,
         url: input.url,
       });

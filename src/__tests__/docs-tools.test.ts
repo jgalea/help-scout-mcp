@@ -295,4 +295,289 @@ describe('Docs Tools Compatibility', () => {
     const response = JSON.parse((result.content[0] as { text: string }).text);
     expect(response.category.description).toBe('Updated description');
   });
+
+  it('should call searchDocsArticles with /search/articles endpoint', async () => {
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/search/articles')
+      .query({
+        query: 'getting started',
+        page: 1,
+        pageSize: 100,
+        status: 'published',
+      })
+      .reply(200, {
+        page: 1,
+        pages: 1,
+        count: 1,
+        items: [
+          {
+            id: 'art-search-1',
+            name: 'Getting Started Guide',
+            status: 'published',
+            publicUrl: 'https://example.com/getting-started',
+            collectionId: 'col-1',
+            preview: 'Welcome to our getting started guide...',
+          },
+        ],
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'searchDocsArticles',
+        arguments: { query: 'getting started' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.results).toHaveLength(1);
+    expect(response.results[0].id).toBe('art-search-1');
+    expect(response.results[0].name).toBe('Getting Started Guide');
+  });
+
+  it('should call getDocsArticle with /articles/{id} endpoint', async () => {
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/articles/art-99')
+      .reply(200, {
+        id: 'art-99',
+        name: 'Test Article',
+        status: 'published',
+        publicUrl: 'https://example.com/test-article',
+        collectionId: 'col-1',
+        categories: ['cat-1'],
+        related: [],
+        viewCount: 42,
+        text: '<p>Article content</p>',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-06-01T00:00:00Z',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'getDocsArticle',
+        arguments: { articleId: 'art-99' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.article.id).toBe('art-99');
+    expect(response.article.name).toBe('Test Article');
+  });
+
+  it('should pass draft as query parameter, not path segment', async () => {
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/articles/art-draft')
+      .query({ draft: true })
+      .reply(200, {
+        id: 'art-draft',
+        name: 'Draft Article',
+        status: 'draft',
+        publicUrl: 'https://example.com/draft-article',
+        collectionId: 'col-1',
+        categories: [],
+        related: [],
+        viewCount: 0,
+        text: '<p>Draft content</p>',
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-06-01T00:00:00Z',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'getDocsArticle',
+        arguments: { articleId: 'art-draft', draft: true },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.article.id).toBe('art-draft');
+    expect(response.article.status).toBe('draft');
+  });
+
+  it('should call updateDocsArticle with PUT /articles/{id}', async () => {
+    nock('https://docsapi.helpscout.net')
+      .put('/v1/articles/art-update', {
+        name: 'Updated Title',
+        status: 'published',
+      })
+      .reply(200, {
+        id: 'art-update',
+        name: 'Updated Title',
+        status: 'published',
+        publicUrl: 'https://example.com/updated',
+        collectionId: 'col-1',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'updateDocsArticle',
+        arguments: {
+          articleId: 'art-update',
+          name: 'Updated Title',
+          status: 'published',
+        },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.article.id).toBe('art-update');
+    expect(response.article.name).toBe('Updated Title');
+  });
+
+  it('should call saveDocsArticleDraft with PUT /articles/{id}/drafts', async () => {
+    nock('https://docsapi.helpscout.net')
+      .put('/v1/articles/art-draft-save/drafts', {
+        text: '<p>Draft content</p>',
+      })
+      .reply(200, {
+        id: 'art-draft-save',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'saveDocsArticleDraft',
+        arguments: {
+          articleId: 'art-draft-save',
+          text: '<p>Draft content</p>',
+        },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.draft.id).toBe('art-draft-save');
+  });
+
+  it('should call getDocsArticleRevision with GET /revisions/{id}', async () => {
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/revisions/rev-1')
+      .reply(200, {
+        id: 'rev-1',
+        articleId: 'art-1',
+        createdBy: { id: 'user-1', firstName: 'Test' },
+        createdAt: '2024-06-01T00:00:00Z',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'getDocsArticleRevision',
+        arguments: { revisionId: 'rev-1' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.revision.id).toBe('rev-1');
+  });
+
+  it('should call findDocsRedirect with GET /redirects (not /redirects/find)', async () => {
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/redirects')
+      .query({
+        siteId: 'site-1',
+        url: '/old/path',
+      })
+      .reply(200, {
+        id: 'redir-1',
+        siteId: 'site-1',
+        urlMapping: '/old/path',
+        redirect: '/new/path',
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'findDocsRedirect',
+        arguments: { siteId: 'site-1', url: '/old/path' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.redirect.id).toBe('redir-1');
+  });
+
+  it('should call updateDocsCategoryOrder with PUT /collections/{id}/categories', async () => {
+    nock('https://docsapi.helpscout.net')
+      .put('/v1/collections/col-order/categories', {
+        categories: ['cat-a', 'cat-b', 'cat-c'],
+      })
+      .reply(200, {});
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'updateDocsCategoryOrder',
+        arguments: {
+          collectionId: 'col-order',
+          categoryIds: ['cat-a', 'cat-b', 'cat-c'],
+        },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+  });
+
+  it('should call deleteDocsArticleDraft with DELETE /articles/{id}/drafts', async () => {
+    process.env.HELPSCOUT_ALLOW_DOCS_DELETE = 'true';
+
+    nock('https://docsapi.helpscout.net')
+      .delete('/v1/articles/art-del-draft/drafts')
+      .reply(200);
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'deleteDocsArticleDraft',
+        arguments: { articleId: 'art-del-draft' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.articleId).toBe('art-del-draft');
+
+    delete process.env.HELPSCOUT_ALLOW_DOCS_DELETE;
+  });
+
+  it('should accept legacy draftId param for deleteDocsArticleDraft', async () => {
+    process.env.HELPSCOUT_ALLOW_DOCS_DELETE = 'true';
+
+    nock('https://docsapi.helpscout.net')
+      .delete('/v1/articles/art-legacy-draft/drafts')
+      .reply(200);
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'deleteDocsArticleDraft',
+        arguments: { draftId: 'art-legacy-draft' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.articleId).toBe('art-legacy-draft');
+
+    delete process.env.HELPSCOUT_ALLOW_DOCS_DELETE;
+  });
 });

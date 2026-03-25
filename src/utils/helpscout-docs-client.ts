@@ -468,7 +468,8 @@ export class HelpScoutDocsClient {
       logger.debug('Unwrapping articles response');
       data = (data as any).articles;
     }
-    
+
+
     if (cacheOptions?.ttl || cacheOptions?.ttl === 0) {
       cache.set(cacheKey, params, data, { ttl: cacheOptions.ttl });
     } else {
