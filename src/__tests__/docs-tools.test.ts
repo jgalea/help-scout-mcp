@@ -341,17 +341,19 @@ describe('Docs Tools Compatibility', () => {
     nock('https://docsapi.helpscout.net')
       .get('/v1/articles/art-99')
       .reply(200, {
-        id: 'art-99',
-        name: 'Test Article',
-        status: 'published',
-        publicUrl: 'https://example.com/test-article',
-        collectionId: 'col-1',
-        categories: ['cat-1'],
-        related: [],
-        viewCount: 42,
-        text: '<p>Article content</p>',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-06-01T00:00:00Z',
+        article: {
+          id: 'art-99',
+          name: 'Test Article',
+          status: 'published',
+          publicUrl: 'https://example.com/test-article',
+          collectionId: 'col-1',
+          categories: ['cat-1'],
+          related: [],
+          viewCount: 42,
+          text: '<p>Article content</p>',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-06-01T00:00:00Z',
+        },
       });
 
     const request: CallToolRequest = {
@@ -374,17 +376,19 @@ describe('Docs Tools Compatibility', () => {
       .get('/v1/articles/art-draft')
       .query({ draft: true })
       .reply(200, {
-        id: 'art-draft',
-        name: 'Draft Article',
-        status: 'draft',
-        publicUrl: 'https://example.com/draft-article',
-        collectionId: 'col-1',
-        categories: [],
-        related: [],
-        viewCount: 0,
-        text: '<p>Draft content</p>',
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-06-01T00:00:00Z',
+        article: {
+          id: 'art-draft',
+          name: 'Draft Article',
+          status: 'draft',
+          publicUrl: 'https://example.com/draft-article',
+          collectionId: 'col-1',
+          categories: [],
+          related: [],
+          viewCount: 0,
+          text: '<p>Draft content</p>',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-06-01T00:00:00Z',
+        },
       });
 
     const request: CallToolRequest = {

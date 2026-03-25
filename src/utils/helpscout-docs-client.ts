@@ -463,10 +463,16 @@ export class HelpScoutDocsClient {
       data = (data as any).categories;
     }
     
-    // The articles endpoint might wrap the response in an 'articles' object
-    if (endpoint.includes('/articles') && data && typeof data === 'object' && 'articles' in data) {
-      logger.debug('Unwrapping articles response');
-      data = (data as any).articles;
+    // The articles endpoint might wrap the response in an 'articles' object (list)
+    // or an 'article' object (single)
+    if (endpoint.includes('/articles') && data && typeof data === 'object') {
+      if ('articles' in data) {
+        logger.debug('Unwrapping articles (plural) response');
+        data = (data as any).articles;
+      } else if ('article' in data) {
+        logger.debug('Unwrapping article (singular) response');
+        data = (data as any).article;
+      }
     }
 
 
