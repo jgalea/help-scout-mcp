@@ -1785,7 +1785,7 @@ export class DocsToolHandler extends Injectable {
     for (const key of endpointsToClean) {
       try {
         cache.clear(key);
-      } catch (error) {
+      } catch (_e) {
         // Ignore errors for non-existent keys
       }
     }
