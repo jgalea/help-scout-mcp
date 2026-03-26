@@ -584,4 +584,46 @@ describe('Docs Tools Compatibility', () => {
 
     delete process.env.HELPSCOUT_ALLOW_DOCS_DELETE;
   });
+
+  it('should strip CDATA wrapper with trailing whitespace from article text', async () => {
+    // Temporarily enable PII to test CDATA stripping on article text
+    const { config } = await import('../utils/config.js');
+    const origAllowPii = config.security.allowPii;
+    (config.security as any).allowPii = true;
+
+    nock('https://docsapi.helpscout.net')
+      .get('/v1/articles/art-cdata')
+      .reply(200, {
+        article: {
+          id: 'art-cdata',
+          name: 'CDATA Test',
+          status: 'published',
+          publicUrl: 'https://example.com/cdata-test',
+          collectionId: 'col-1',
+          categories: [],
+          related: [],
+          viewCount: 0,
+          text: '<![CDATA[<p>Article content</p>]]>\n',
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-06-01T00:00:00Z',
+        },
+      });
+
+    const request: CallToolRequest = {
+      method: 'tools/call',
+      params: {
+        name: 'getDocsArticle',
+        arguments: { articleId: 'art-cdata' },
+      },
+    };
+
+    const result = await toolHandler.callTool(request);
+    expect(result.isError).toBeUndefined();
+    const response = JSON.parse((result.content[0] as { text: string }).text);
+    expect(response.article.text).toBe('<p>Article content</p>');
+    expect(response.article.text).not.toContain(']]>');
+    expect(response.article.text).not.toContain('CDATA');
+
+    (config.security as any).allowPii = origAllowPii;
+  });
 });

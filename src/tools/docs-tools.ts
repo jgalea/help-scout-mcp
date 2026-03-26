@@ -13,7 +13,7 @@ import { z } from 'zod';
  */
 function stripCdata(text: string | undefined): string | undefined {
   if (!text) return text;
-  return text.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
+  return text.replace(/^<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
 }
 
 import {
