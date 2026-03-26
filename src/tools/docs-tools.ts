@@ -16,6 +16,22 @@ function stripCdata(text: string | undefined): string | undefined {
   return text.replace(/^<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
 }
 
+/**
+ * Collapse newlines between block-level HTML elements.
+ * AI assistants generate HTML with \n between tags which Help Scout
+ * renders as visible whitespace. This removes those newlines so the
+ * resulting article doesn't have extra spacing.
+ */
+function collapseBlockWhitespace(html: string): string {
+  return html
+    // Strip CDATA wrapper if AI included it in the input
+    .replace(/^<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '')
+    // Remove whitespace between closing and opening block-level tags
+    .replace(/(<\/(?:p|h[1-6]|div|ul|ol|li|blockquote|pre|table|tr|td|th|thead|tbody|tfoot|hr|br|section|article|header|footer|nav|figure|figcaption|details|summary)>)\s*\n+\s*/gi, '$1')
+    .replace(/\n+\s*(<(?:p|h[1-6]|div|ul|ol|li|blockquote|pre|table|tr|td|th|thead|tbody|tfoot|hr|br|section|article|header|footer|nav|figure|figcaption|details|summary)[\s>])/gi, '$1')
+    .trim();
+}
+
 import {
   DocsSite,
   DocsCollection,
@@ -1397,7 +1413,7 @@ export class DocsToolHandler extends Injectable {
     // Build update payload
     const updateData: Record<string, unknown> = {};
     if (input.name !== undefined) updateData.name = input.name;
-    if (input.text !== undefined) updateData.text = input.text;
+    if (input.text !== undefined) updateData.text = collapseBlockWhitespace(input.text);
     if (input.status !== undefined) updateData.status = input.status;
     if (input.categories !== undefined) updateData.categories = input.categories;
     if (input.related !== undefined) updateData.related = input.related;
@@ -2032,7 +2048,7 @@ export class DocsToolHandler extends Injectable {
       const articleData: any = {
         collectionId: input.collectionId,
         name: input.name,
-        text: input.text,
+        text: collapseBlockWhitespace(input.text),
         status: input.status,
         visibility: input.visibility,
       };
@@ -2503,7 +2519,7 @@ export class DocsToolHandler extends Injectable {
     
     try {
       const draftData: any = {
-        text: input.text,
+        text: collapseBlockWhitespace(input.text),
       };
       if (input.name) draftData.name = input.name;
       

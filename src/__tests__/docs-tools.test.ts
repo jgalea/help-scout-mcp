@@ -626,4 +626,105 @@ describe('Docs Tools Compatibility', () => {
 
     (config.security as any).allowPii = origAllowPii;
   });
+
+  describe('block whitespace collapsing for Slate editor', () => {
+    // Slate v0.47 treats \n text nodes between block elements as visible content.
+    // The createDocsArticle tool must collapse these before sending to the API.
+
+    function testCollapse(inputText: string, expectedText: string, description: string) {
+      it(description, async () => {
+        // nock body matcher verifies the sanitized text was sent to the API
+        nock('https://docsapi.helpscout.net')
+          .post('/v1/articles', (body: any) => body.text === expectedText)
+          .reply(201, '');
+
+        const request: CallToolRequest = {
+          method: 'tools/call',
+          params: {
+            name: 'createDocsArticle',
+            arguments: {
+              collectionId: 'col-1',
+              name: 'Test',
+              text: inputText,
+            },
+          },
+        };
+
+        const result = await toolHandler.callTool(request);
+        expect(result.isError).toBeUndefined();
+      });
+    }
+
+    testCollapse(
+      '<p>First paragraph.</p>\n\n<p>Second paragraph.</p>',
+      '<p>First paragraph.</p><p>Second paragraph.</p>',
+      'should remove newlines between paragraphs',
+    );
+
+    testCollapse(
+      '<p>Intro text.</p>\n\n<h3>Section Title</h3>\n\n<p>Section body.</p>',
+      '<p>Intro text.</p><h3>Section Title</h3><p>Section body.</p>',
+      'should remove newlines between paragraphs and headings',
+    );
+
+    testCollapse(
+      '<ul>\n  <li>Item one</li>\n  <li>Item two</li>\n  <li>Item three</li>\n</ul>',
+      '<ul><li>Item one</li><li>Item two</li><li>Item three</li></ul>',
+      'should remove newlines between list items',
+    );
+
+    testCollapse(
+      '<p>Before list.</p>\n\n<ul>\n<li>Alpha</li>\n<li>Beta</li>\n</ul>\n\n<p>After list.</p>',
+      '<p>Before list.</p><ul><li>Alpha</li><li>Beta</li></ul><p>After list.</p>',
+      'should remove newlines around lists',
+    );
+
+    testCollapse(
+      '<h1>Title</h1>\n\n<h2>Subtitle</h2>\n\n<p>Content here.</p>',
+      '<h1>Title</h1><h2>Subtitle</h2><p>Content here.</p>',
+      'should remove newlines between heading levels',
+    );
+
+    testCollapse(
+      '<p>Text with <strong>bold</strong> and <a href="#">links</a> inside.</p>\n\n<p>Next.</p>',
+      '<p>Text with <strong>bold</strong> and <a href="#">links</a> inside.</p><p>Next.</p>',
+      'should preserve inline elements within blocks',
+    );
+
+    testCollapse(
+      '<div>\n<p>Inside div.</p>\n</div>\n\n<p>Outside div.</p>',
+      '<div><p>Inside div.</p></div><p>Outside div.</p>',
+      'should remove newlines around divs',
+    );
+
+    testCollapse(
+      '<blockquote>\n<p>Quoted text.</p>\n</blockquote>\n\n<p>Regular text.</p>',
+      '<blockquote><p>Quoted text.</p></blockquote><p>Regular text.</p>',
+      'should remove newlines around blockquotes',
+    );
+
+    testCollapse(
+      '<table>\n<tr>\n<td>Cell 1</td>\n<td>Cell 2</td>\n</tr>\n</table>',
+      '<table><tr><td>Cell 1</td><td>Cell 2</td></tr></table>',
+      'should remove newlines inside tables',
+    );
+
+    testCollapse(
+      '\n\n<p>Leading whitespace.</p>\n\n',
+      '<p>Leading whitespace.</p>',
+      'should trim leading and trailing whitespace',
+    );
+
+    testCollapse(
+      '<p>No newlines here.</p><h2>Already compact.</h2><p>Done.</p>',
+      '<p>No newlines here.</p><h2>Already compact.</h2><p>Done.</p>',
+      'should not modify already-compact HTML',
+    );
+
+    testCollapse(
+      '<![CDATA[<p>Wrapped in CDATA.</p>\n\n<h2>Heading</h2>\n\n<p>More text.</p>]]>',
+      '<p>Wrapped in CDATA.</p><h2>Heading</h2><p>More text.</p>',
+      'should strip CDATA wrapper from input text and collapse newlines',
+    );
+  });
 });
