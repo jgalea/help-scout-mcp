@@ -1,0 +1,3096 @@
+import { createMcpToolError } from '../utils/mcp-errors.js';
+import { Injectable } from '../utils/service-container.js';
+import { isVerbose } from '../utils/config.js';
+import { compactTool } from './tool-utils.js';
+import { z } from 'zod';
+/**
+ * Strip CDATA wrapper from Help Scout Docs API responses.
+ * The API returns article text wrapped in <![CDATA[...]]> which is not
+ * part of the actual content and should be removed before returning to callers.
+ */
+function stripCdata(text) {
+    if (!text)
+        return text;
+    return text.replace(/^<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '').trim();
+}
+/**
+ * Collapse newlines between block-level HTML elements.
+ * AI assistants generate HTML with \n between tags which Help Scout
+ * renders as visible whitespace. This removes those newlines so the
+ * resulting article doesn't have extra spacing.
+ */
+function collapseBlockWhitespace(html) {
+    return html
+        // Strip CDATA wrapper if AI included it in the input
+        .replace(/^<!\[CDATA\[/, '').replace(/\]\]>\s*$/, '')
+        // Remove whitespace between closing and opening block-level tags
+        .replace(/(<\/(?:p|h[1-6]|div|ul|ol|li|blockquote|pre|table|tr|td|th|thead|tbody|tfoot|hr|br|section|article|header|footer|nav|figure|figcaption|details|summary)>)\s*\n+\s*/gi, '$1')
+        .replace(/\n+\s*(<(?:p|h[1-6]|div|ul|ol|li|blockquote|pre|table|tr|td|th|thead|tbody|tfoot|hr|br|section|article|header|footer|nav|figure|figcaption|details|summary)[\s>])/gi, '$1')
+        .trim();
+}
+import { ListDocsCategoriesInputSchema, ListDocsArticlesInputSchema, GetDocsArticleInputSchema, UpdateDocsArticleInputSchema, } from '../schema/types.js';
+/**
+ * Constants for Docs tool operations
+ */
+const DOCS_TOOL_CONSTANTS = {
+    // API pagination defaults
+    DEFAULT_PAGE_SIZE: 100, // Use max page size by default for better performance
+    MAX_PAGE_SIZE: 100,
+    // Cache configuration
+    DEFAULT_CACHE_TTL: 600, // 10 minutes for docs content
+    // Sort defaults
+    DEFAULT_COLLECTION_SORT: 'order',
+    DEFAULT_CATEGORY_SORT: 'order',
+    DEFAULT_ARTICLE_SORT: 'createdAt',
+};
+const DocsEntityTypeSchema = z.enum(['site', 'collection', 'category']);
+const UpdatableDocsEntityTypeSchema = z.enum(['collection', 'category']);
+const ListDocsArticlesMergedInputSchema = ListDocsArticlesInputSchema.refine(data => Number(Boolean(data.collectionId)) + Number(Boolean(data.categoryId)) === 1, { message: 'Provide exactly one of collectionId or categoryId.' });
+const GetDocsEntityInputSchema = z.object({
+    type: DocsEntityTypeSchema,
+    id: z.string(),
+});
+const UpdateDocsEntityInputSchema = z.object({
+    type: UpdatableDocsEntityTypeSchema,
+    id: z.string(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    visibility: z.enum(['public', 'private']).optional(),
+    order: z.number().optional(),
+});
+const DOCS_TOOL_DESCRIPTIONS = {
+    listDocsSites: 'List Docs sites.',
+    listDocsCollections: 'List Docs collections.',
+    listDocsCategories: 'List categories in a collection.',
+    listDocsArticles: 'List articles in a collection or category.',
+    getDocsArticle: 'Get a Docs article.',
+    updateDocsArticle: 'Update a Docs article.',
+    updateDocsEntity: 'Update a Docs collection or category.',
+    getSiteCollections: 'Get collections for a site.',
+    searchDocsArticles: 'Search Docs articles.',
+    createDocsArticle: 'Create a Docs article.',
+    deleteDocsArticle: 'Delete a Docs article.',
+    updateDocsViewCount: 'Update a Docs article view count.',
+    listRelatedDocsArticles: 'List related Docs articles.',
+    createDocsCategory: 'Create a Docs category.',
+    deleteDocsCategory: 'Delete a Docs category.',
+    getDocsEntity: 'Get a Docs site, collection, or category.',
+    updateDocsCategoryOrder: 'Reorder categories in a collection.',
+    getDocsSiteRestrictions: 'Get Docs site restrictions.',
+};
+export class DocsToolHandler extends Injectable {
+    constructor(container) {
+        super(container);
+    }
+    /**
+     * List all Docs-related tools
+     */
+    async listDocsTools() {
+        const tools = [
+            {
+                name: 'listDocsSites',
+                description: 'List all Help Scout Docs sites or search for a specific site. Supports natural language queries like "find GravityKit site"',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Natural language query to search for specific sites (e.g. "GravityKit", "TrustedLogin")',
+                        },
+                        page: {
+                            type: 'number',
+                            description: 'Page number to retrieve',
+                            minimum: 1,
+                            default: 1,
+                        },
+                    },
+                },
+            },
+            {
+                name: 'listDocsCollections',
+                description: 'List collections in Help Scout Docs. Supports natural language queries like "GravityKit collections"',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Natural language query to identify the site (e.g. "GravityKit", "TrustedLogin site")',
+                        },
+                        siteId: {
+                            type: 'string',
+                            description: 'Specific site ID (overrides query)',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['all', 'public', 'private'],
+                            description: 'Filter by visibility',
+                            default: 'all',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['number', 'visibility', 'order', 'name', 'createdAt', 'updatedAt'],
+                            default: DOCS_TOOL_CONSTANTS.DEFAULT_COLLECTION_SORT,
+                            description: 'Sort field',
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            default: 'asc',
+                            description: 'Sort order',
+                        },
+                        page: {
+                            type: 'number',
+                            description: 'Page number to retrieve',
+                            minimum: 1,
+                            default: 1,
+                        },
+                        pageSize: {
+                            type: 'number',
+                            description: `Number of collections per page (max ${DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+                            minimum: 1,
+                            maximum: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: DOCS_TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                    },
+                },
+            },
+            {
+                name: 'listDocsCategories',
+                description: 'List categories within a specific collection',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: {
+                            type: 'string',
+                            description: 'The collection ID to list categories for',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['number', 'order', 'name', 'articleCount', 'createdAt', 'updatedAt'],
+                            default: DOCS_TOOL_CONSTANTS.DEFAULT_CATEGORY_SORT,
+                            description: 'Sort field',
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            default: 'asc',
+                            description: 'Sort order',
+                        },
+                        page: {
+                            type: 'number',
+                            description: 'Page number to retrieve',
+                            minimum: 1,
+                            default: 1,
+                        },
+                    },
+                    required: ['collectionId'],
+                },
+            },
+            {
+                name: 'listDocsArticles',
+                description: DOCS_TOOL_DESCRIPTIONS.listDocsArticles,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: {
+                            type: 'string',
+                            description: 'Collection ID. Use either collectionId or categoryId.',
+                        },
+                        categoryId: {
+                            type: 'string',
+                            description: 'Category ID. Use either collectionId or categoryId.',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['all', 'published', 'notpublished'],
+                            default: 'all',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['number', 'status', 'name', 'popularity', 'createdAt', 'updatedAt'],
+                            default: DOCS_TOOL_CONSTANTS.DEFAULT_ARTICLE_SORT,
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            default: 'desc',
+                        },
+                        page: {
+                            type: 'number',
+                            minimum: 1,
+                            default: 1,
+                        },
+                        pageSize: {
+                            type: 'number',
+                            minimum: 1,
+                            maximum: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: DOCS_TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                    },
+                },
+            },
+            {
+                name: 'getDocsArticle',
+                description: 'Get full article content including text, categories, and related articles',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: {
+                            type: 'string',
+                            description: 'The article ID to retrieve',
+                        },
+                        draft: {
+                            type: 'boolean',
+                            description: 'Retrieve draft version if available',
+                            default: false,
+                        },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'updateDocsArticle',
+                description: 'Update an existing article (name, text, status, categories, or related articles)',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: {
+                            type: 'string',
+                            description: 'The article ID to update',
+                        },
+                        name: {
+                            type: 'string',
+                            description: 'New article title/name',
+                        },
+                        text: {
+                            type: 'string',
+                            description: 'New article content (HTML)',
+                        },
+                        status: {
+                            type: 'string',
+                            description: 'New article status',
+                        },
+                        categories: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of category IDs for the article',
+                        },
+                        related: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of related article IDs',
+                        },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'updateDocsEntity',
+                description: DOCS_TOOL_DESCRIPTIONS.updateDocsEntity,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        type: {
+                            type: 'string',
+                            enum: ['collection', 'category'],
+                        },
+                        id: {
+                            type: 'string',
+                        },
+                        name: {
+                            type: 'string',
+                        },
+                        description: {
+                            type: 'string',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['public', 'private'],
+                        },
+                        order: {
+                            type: 'number',
+                        },
+                    },
+                    required: ['type', 'id'],
+                },
+            },
+            {
+                name: 'getSiteCollections',
+                description: 'Get collections for a specific site using natural language. Supports queries like "GravityKit collections"',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Natural language query to identify the site (e.g. "GravityKit", "TrustedLogin site")',
+                        },
+                        siteId: {
+                            type: 'string',
+                            description: 'Optional: Specific site ID (overrides query)',
+                        },
+                    },
+                },
+            },
+            {
+                name: 'searchDocsArticles',
+                description: 'Search for articles across all Help Scout Docs sites using keywords',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Search query/keywords to find articles',
+                        },
+                        collectionId: {
+                            type: 'string',
+                            description: 'Optional: Limit search to specific collection',
+                        },
+                        categoryId: {
+                            type: 'string',
+                            description: 'Optional: Limit search to specific category',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['public', 'private', 'all'],
+                            description: 'Filter by visibility',
+                            default: 'all',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['all', 'published', 'notpublished'],
+                            description: 'Filter by status',
+                            default: 'published',
+                        },
+                        page: {
+                            type: 'number',
+                            description: 'Page number to retrieve',
+                            minimum: 1,
+                            default: 1,
+                        },
+                    },
+                    required: ['query'],
+                },
+            },
+            {
+                name: 'createDocsArticle',
+                description: 'Create a new Help Scout Docs article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: {
+                            type: 'string',
+                            description: 'Collection ID where the article will be created',
+                        },
+                        name: {
+                            type: 'string',
+                            description: 'Article title',
+                        },
+                        text: {
+                            type: 'string',
+                            description: 'Article content (HTML)',
+                        },
+                        categoryIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Category IDs to assign the article to',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['published', 'notpublished'],
+                            description: 'Publication status',
+                            default: 'notpublished',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['public', 'private'],
+                            description: 'Article visibility',
+                            default: 'public',
+                        },
+                        slug: {
+                            type: 'string',
+                            description: 'URL slug for the article',
+                        },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Tags for the article',
+                        },
+                    },
+                    required: ['collectionId', 'name', 'text'],
+                },
+            },
+            {
+                name: 'deleteDocsArticle',
+                description: 'Delete a Help Scout Docs article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: {
+                            type: 'string',
+                            description: 'ID of the article to delete',
+                        },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'updateDocsViewCount',
+                description: 'Update the view count for a Help Scout Docs article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: {
+                            type: 'string',
+                            description: 'ID of the article to update view count',
+                        },
+                        count: {
+                            type: 'number',
+                            description: 'Number of views to add (default: 1)',
+                            minimum: 1,
+                            default: 1,
+                        },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'listRelatedDocsArticles',
+                description: 'Get articles related to a specific article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: {
+                            type: 'string',
+                            description: 'ID of the article to find related articles for',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['all', 'published', 'notpublished'],
+                            description: 'Filter by status',
+                            default: 'published',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['updatedAt', 'createdAt', 'name', 'popularity', 'order'],
+                            description: 'Sort field',
+                            default: 'popularity',
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            description: 'Sort order',
+                            default: 'desc',
+                        },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'createDocsCategory',
+                description: 'Create a new category in a collection',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: {
+                            type: 'string',
+                            description: 'Collection ID where the category will be created',
+                        },
+                        name: {
+                            type: 'string',
+                            description: 'Category name',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['public', 'private'],
+                            description: 'Category visibility',
+                            default: 'public',
+                        },
+                        order: {
+                            type: 'number',
+                            description: 'Display order for the category',
+                        },
+                    },
+                    required: ['collectionId', 'name'],
+                },
+            },
+            {
+                name: 'deleteDocsCategory',
+                description: 'Delete a category from a collection',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        categoryId: {
+                            type: 'string',
+                            description: 'ID of the category to delete',
+                        },
+                    },
+                    required: ['categoryId'],
+                },
+            },
+            {
+                name: 'createDocsCollection',
+                description: 'Create a new collection in a site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: {
+                            type: 'string',
+                            description: 'Site ID where the collection will be created',
+                        },
+                        name: {
+                            type: 'string',
+                            description: 'Collection name',
+                        },
+                        visibility: {
+                            type: 'string',
+                            enum: ['public', 'private'],
+                            description: 'Collection visibility',
+                            default: 'public',
+                        },
+                        order: {
+                            type: 'number',
+                            description: 'Display order for the collection',
+                        },
+                    },
+                    required: ['siteId', 'name'],
+                },
+            },
+            {
+                name: 'deleteDocsCollection',
+                description: 'Delete a collection from a site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: {
+                            type: 'string',
+                            description: 'ID of the collection to delete',
+                        },
+                    },
+                    required: ['collectionId'],
+                },
+            },
+            // Article Revisions
+            {
+                name: 'listDocsArticleRevisions',
+                description: 'List all revisions for a specific article with metadata about changes',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: { type: 'string', description: 'The article ID to get revisions for' },
+                        page: { type: 'number', default: 1, description: 'Page number for pagination' },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            {
+                name: 'getDocsArticleRevision',
+                description: 'Get a specific revision of an article by revision ID',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        revisionId: { type: 'string', description: 'The revision ID to retrieve' },
+                        draft: { type: 'boolean', default: false, description: 'If true, get the latest draft version' },
+                    },
+                    required: ['revisionId'],
+                },
+            },
+            // Article Drafts
+            {
+                name: 'saveDocsArticleDraft',
+                description: 'Save a draft version of an article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: { type: 'string', description: 'The article ID to save draft for' },
+                        text: { type: 'string', description: 'The draft article content (HTML)' },
+                        name: { type: 'string', description: 'The draft article title' },
+                    },
+                    required: ['articleId', 'text'],
+                },
+            },
+            {
+                name: 'deleteDocsArticleDraft',
+                description: 'Delete a draft version of an article',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: { type: 'string', description: 'The article ID whose draft to delete' },
+                    },
+                    required: ['articleId'],
+                },
+            },
+            // Article Upload
+            {
+                name: 'uploadDocsArticle',
+                description: 'Upload an article from a file (HTML or Markdown)',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: { type: 'string', description: 'Collection ID where article will be created' },
+                        filePath: { type: 'string', description: 'Path to the file to upload' },
+                        name: { type: 'string', description: 'Article title' },
+                        categoryIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Category IDs to assign to the article'
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['published', 'notpublished'],
+                            default: 'notpublished',
+                            description: 'Article status'
+                        },
+                    },
+                    required: ['collectionId', 'filePath', 'name'],
+                },
+            },
+            // Assets
+            {
+                name: 'createDocsArticleAsset',
+                description: 'Upload an asset (image, file) for use in articles',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        articleId: { type: 'string', description: 'Article ID to associate the asset with' },
+                        filePath: { type: 'string', description: 'Path to the file to upload' },
+                        assetType: { type: 'string', enum: ['image', 'attachment'], default: 'image', description: 'Type of asset (image or attachment)' },
+                        fileName: { type: 'string', description: 'Name for the uploaded file' },
+                    },
+                    required: ['articleId', 'filePath'],
+                },
+            },
+            {
+                name: 'createDocsSettingsAsset',
+                description: 'Upload an asset for site settings (logo, favicon)',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'Site ID for the asset' },
+                        filePath: { type: 'string', description: 'Path to the file to upload' },
+                        assetType: {
+                            type: 'string',
+                            enum: ['logo', 'favicon', 'touchicon'],
+                            description: 'Type of settings asset'
+                        },
+                    },
+                    required: ['siteId', 'filePath', 'assetType'],
+                },
+            },
+            // Single Resource Getters
+            {
+                name: 'getDocsEntity',
+                description: DOCS_TOOL_DESCRIPTIONS.getDocsEntity,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        type: {
+                            type: 'string',
+                            enum: ['site', 'collection', 'category'],
+                        },
+                        id: { type: 'string' },
+                    },
+                    required: ['type', 'id'],
+                },
+            },
+            // Category Order
+            {
+                name: 'updateDocsCategoryOrder',
+                description: 'Update the display order of categories within a collection',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        collectionId: { type: 'string', description: 'Collection ID containing the categories' },
+                        categoryIds: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Array of category IDs in desired order'
+                        },
+                    },
+                    required: ['collectionId', 'categoryIds'],
+                },
+            },
+            // Redirects
+            {
+                name: 'listDocsRedirects',
+                description: 'List all redirects for a site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'Site ID to list redirects for' },
+                        page: { type: 'number', default: 1, description: 'Page number for pagination' },
+                    },
+                    required: ['siteId'],
+                },
+            },
+            {
+                name: 'getDocsRedirect',
+                description: 'Get a single redirect by ID',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        redirectId: { type: 'string', description: 'The redirect ID to retrieve' },
+                    },
+                    required: ['redirectId'],
+                },
+            },
+            {
+                name: 'findDocsRedirect',
+                description: 'Find a redirect by URL',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'Site ID to search in' },
+                        url: { type: 'string', description: 'URL to find redirect for' },
+                    },
+                    required: ['siteId', 'url'],
+                },
+            },
+            {
+                name: 'createDocsRedirect',
+                description: 'Create a new redirect',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'Site ID for the redirect' },
+                        urlMapping: { type: 'string', description: 'Source URL pattern' },
+                        redirect: { type: 'string', description: 'Target URL' },
+                        type: {
+                            type: 'number',
+                            enum: [301, 302],
+                            default: 301,
+                            description: 'HTTP redirect code'
+                        },
+                    },
+                    required: ['siteId', 'urlMapping', 'redirect'],
+                },
+            },
+            {
+                name: 'updateDocsRedirect',
+                description: 'Update an existing redirect',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        redirectId: { type: 'string', description: 'The redirect ID to update' },
+                        urlMapping: { type: 'string', description: 'Source URL pattern' },
+                        redirect: { type: 'string', description: 'Target URL' },
+                        type: {
+                            type: 'number',
+                            enum: [301, 302],
+                            description: 'HTTP redirect code'
+                        },
+                    },
+                    required: ['redirectId'],
+                },
+            },
+            {
+                name: 'deleteDocsRedirect',
+                description: 'Delete a redirect',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        redirectId: { type: 'string', description: 'The redirect ID to delete' },
+                    },
+                    required: ['redirectId'],
+                },
+            },
+            // Site Management
+            {
+                name: 'createDocsSite',
+                description: 'Create a new Docs site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string', description: 'Site name' },
+                        subdomain: { type: 'string', description: 'Site subdomain' },
+                        cname: { type: 'string', description: 'Custom domain (optional)' },
+                        logoUrl: { type: 'string', description: 'URL to site logo' },
+                    },
+                    required: ['name', 'subdomain'],
+                },
+            },
+            {
+                name: 'updateDocsSite',
+                description: 'Update an existing Docs site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'The site ID to update' },
+                        name: { type: 'string', description: 'Site name' },
+                        subdomain: { type: 'string', description: 'Site subdomain' },
+                        cname: { type: 'string', description: 'Custom domain' },
+                        logoUrl: { type: 'string', description: 'URL to site logo' },
+                    },
+                    required: ['siteId'],
+                },
+            },
+            {
+                name: 'deleteDocsSite',
+                description: 'Delete a Docs site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'The site ID to delete' },
+                    },
+                    required: ['siteId'],
+                },
+            },
+            // Site Restrictions
+            {
+                name: 'getDocsSiteRestrictions',
+                description: 'Get access restrictions for a Docs site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'The site ID to get restrictions for' },
+                    },
+                    required: ['siteId'],
+                },
+            },
+            {
+                name: 'updateDocsSiteRestrictions',
+                description: 'Update access restrictions for a Docs site',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        siteId: { type: 'string', description: 'The site ID to update restrictions for' },
+                        restricted: { type: 'boolean', description: 'Whether the site requires authentication' },
+                        allowedDomains: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Email domains allowed access'
+                        },
+                        ssoEnabled: { type: 'boolean', description: 'Enable SSO for the site' },
+                    },
+                    required: ['siteId'],
+                },
+            },
+        ];
+        return tools.map(tool => compactTool(tool, DOCS_TOOL_DESCRIPTIONS[tool.name]));
+    }
+    /**
+     * Call a Docs tool
+     */
+    async callDocsTool(request) {
+        const requestId = Math.random().toString(36).substring(7);
+        const startTime = Date.now();
+        const { logger } = this.services.resolve(['logger']);
+        logger.info('Docs tool call started', {
+            requestId,
+            toolName: request.params.name,
+            arguments: request.params.arguments,
+        });
+        try {
+            let result;
+            switch (request.params.name) {
+                case 'listDocsSites':
+                    result = await this.listDocsSites(request.params.arguments || {});
+                    break;
+                case 'listDocsCollections':
+                    result = await this.listDocsCollections(request.params.arguments || {});
+                    break;
+                case 'listDocsCategories':
+                    result = await this.listDocsCategories(request.params.arguments || {});
+                    break;
+                case 'listDocsArticles':
+                case 'listDocsArticlesByCollection':
+                case 'listDocsArticlesByCategory':
+                    result = await this.listDocsArticles(request.params.arguments || {});
+                    break;
+                case 'getDocsArticle':
+                    result = await this.getDocsArticle(request.params.arguments || {});
+                    break;
+                case 'updateDocsArticle':
+                    result = await this.updateDocsArticle(request.params.arguments || {});
+                    break;
+                case 'updateDocsEntity':
+                case 'updateDocsCollection':
+                case 'updateDocsCategory':
+                    result = await this.updateDocsEntity(request.params.arguments || {});
+                    break;
+                case 'getTopDocsArticles':
+                    result = await this.getTopDocsArticles(request.params.arguments || {});
+                    break;
+                case 'testDocsConnection':
+                    result = await this.testDocsConnection();
+                    break;
+                case 'clearDocsCache':
+                    result = await this.clearDocsCache();
+                    break;
+                case 'listAllDocsCollections':
+                    result = await this.listAllDocsCollections();
+                    break;
+                case 'getSiteCollections':
+                    result = await this.getSiteCollections(request.params.arguments || {});
+                    break;
+                case 'searchDocsArticles':
+                    result = await this.searchDocsArticles(request.params.arguments || {});
+                    break;
+                case 'createDocsArticle':
+                    result = await this.createDocsArticle(request.params.arguments || {});
+                    break;
+                case 'deleteDocsArticle':
+                    result = await this.deleteDocsArticle(request.params.arguments || {});
+                    break;
+                case 'updateDocsViewCount':
+                    result = await this.updateDocsViewCount(request.params.arguments || {});
+                    break;
+                case 'listRelatedDocsArticles':
+                    result = await this.listRelatedDocsArticles(request.params.arguments || {});
+                    break;
+                case 'createDocsCategory':
+                    result = await this.createDocsCategory(request.params.arguments || {});
+                    break;
+                case 'deleteDocsCategory':
+                    result = await this.deleteDocsCategory(request.params.arguments || {});
+                    break;
+                case 'createDocsCollection':
+                    result = await this.createDocsCollection(request.params.arguments || {});
+                    break;
+                case 'deleteDocsCollection':
+                    result = await this.deleteDocsCollection(request.params.arguments || {});
+                    break;
+                // Article Revisions
+                case 'listDocsArticleRevisions':
+                    result = await this.listDocsArticleRevisions(request.params.arguments || {});
+                    break;
+                case 'getDocsArticleRevision':
+                    result = await this.getDocsArticleRevision(request.params.arguments || {});
+                    break;
+                // Article Drafts
+                case 'saveDocsArticleDraft':
+                    result = await this.saveDocsArticleDraft(request.params.arguments || {});
+                    break;
+                case 'deleteDocsArticleDraft':
+                    result = await this.deleteDocsArticleDraft(request.params.arguments || {});
+                    break;
+                // Article Upload
+                case 'uploadDocsArticle':
+                    result = await this.uploadDocsArticle(request.params.arguments || {});
+                    break;
+                // Assets
+                case 'createDocsArticleAsset':
+                    result = await this.createDocsArticleAsset(request.params.arguments || {});
+                    break;
+                case 'createDocsSettingsAsset':
+                    result = await this.createDocsSettingsAsset(request.params.arguments || {});
+                    break;
+                // Single Resource Getters
+                case 'getDocsEntity':
+                case 'getDocsCategory':
+                case 'getDocsCollection':
+                case 'getDocsSite':
+                    result = await this.getDocsEntity(request.params.arguments || {});
+                    break;
+                // Category Order
+                case 'updateDocsCategoryOrder':
+                    result = await this.updateDocsCategoryOrder(request.params.arguments || {});
+                    break;
+                // Redirects
+                case 'listDocsRedirects':
+                    result = await this.listDocsRedirects(request.params.arguments || {});
+                    break;
+                case 'getDocsRedirect':
+                    result = await this.getDocsRedirect(request.params.arguments || {});
+                    break;
+                case 'findDocsRedirect':
+                    result = await this.findDocsRedirect(request.params.arguments || {});
+                    break;
+                case 'createDocsRedirect':
+                    result = await this.createDocsRedirect(request.params.arguments || {});
+                    break;
+                case 'updateDocsRedirect':
+                    result = await this.updateDocsRedirect(request.params.arguments || {});
+                    break;
+                case 'deleteDocsRedirect':
+                    result = await this.deleteDocsRedirect(request.params.arguments || {});
+                    break;
+                // Site Management
+                case 'createDocsSite':
+                    result = await this.createDocsSite(request.params.arguments || {});
+                    break;
+                case 'updateDocsSite':
+                    result = await this.updateDocsSite(request.params.arguments || {});
+                    break;
+                case 'deleteDocsSite':
+                    result = await this.deleteDocsSite(request.params.arguments || {});
+                    break;
+                // Site Restrictions
+                case 'getDocsSiteRestrictions':
+                    result = await this.getDocsSiteRestrictions(request.params.arguments || {});
+                    break;
+                case 'updateDocsSiteRestrictions':
+                    result = await this.updateDocsSiteRestrictions(request.params.arguments || {});
+                    break;
+                default:
+                    throw new Error(`Unknown Docs tool: ${request.params.name}`);
+            }
+            const duration = Date.now() - startTime;
+            logger.info('Docs tool call completed', {
+                requestId,
+                toolName: request.params.name,
+                duration,
+            });
+            return result;
+        }
+        catch (error) {
+            const duration = Date.now() - startTime;
+            return createMcpToolError(error, {
+                toolName: request.params.name,
+                requestId,
+                duration,
+            });
+        }
+    }
+    async listDocsSites(args) {
+        const input = z.object({
+            query: z.string().optional(),
+            page: z.number().default(1),
+        }).parse(args);
+        const { helpScoutDocsClient, logger } = this.services.resolve(['helpScoutDocsClient', 'logger']);
+        const response = await helpScoutDocsClient.get('/sites', {
+            page: input.page,
+        });
+        // Log the response structure
+        logger.info('listDocsSites response structure', {
+            hasItems: !!response.items,
+            itemsLength: response.items?.length || 0,
+            responseKeys: Object.keys(response),
+            page: response.page,
+            pages: response.pages,
+            count: response.count
+        });
+        // If there's a query, filter the results
+        let filteredSites = response.items || [];
+        const scoredSites = [];
+        if (input.query && filteredSites.length > 0) {
+            // Score each site against the query
+            for (const site of filteredSites) {
+                // Temporarily set the sites in resolver to just this one to get its score
+                const tempResolver = new (await import('../utils/site-resolver.js')).SiteResolver();
+                // @ts-ignore - accessing private property for scoring
+                tempResolver.sites = [site];
+                const match = await tempResolver.resolveSite(input.query, undefined);
+                if (match && match.matchScore > 0) {
+                    scoredSites.push({
+                        site,
+                        score: match.matchScore,
+                        reason: match.matchReason
+                    });
+                }
+            }
+            // Sort by score and filter to only matched sites
+            scoredSites.sort((a, b) => b.score - a.score);
+            filteredSites = scoredSites.map(s => s.site);
+        }
+        // Check if the response has any items
+        if (!filteredSites || filteredSites.length === 0) {
+            logger.warn('No Docs sites found. This could indicate:', {
+                reasons: [
+                    '1. The API key lacks Docs permissions',
+                    '2. No Docs sites are configured in the Help Scout account',
+                    '3. The account does not have Help Scout Docs enabled'
+                ]
+            });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            sites: [],
+                            pagination: response.page ? {
+                                page: response.page,
+                                pages: response.pages || 0,
+                                count: response.count || 0,
+                            } : {},
+                        }),
+                    },
+                ],
+            };
+        }
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        sites: isVerbose(args) ? filteredSites : filteredSites.map((s) => ({ id: s.id, title: s.title || s.name, subDomain: s.subDomain || s.subdomain, cname: s.cname, hasPublicSite: s.hasPublicSite })),
+                        pagination: {
+                            page: response.page,
+                            pages: response.pages,
+                            count: response.count,
+                        },
+                    }),
+                },
+            ],
+        };
+    }
+    async listDocsCollections(args) {
+        const input = z.object({
+            query: z.string().optional(),
+            siteId: z.string().optional(),
+            visibility: z.enum(['all', 'public', 'private']).default('all'),
+            sort: z.string().default(DOCS_TOOL_CONSTANTS.DEFAULT_COLLECTION_SORT),
+            order: z.enum(['asc', 'desc']).default('asc'),
+            page: z.number().default(1),
+            pageSize: z.number().min(1).max(DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE).default(DOCS_TOOL_CONSTANTS.DEFAULT_PAGE_SIZE),
+        }).parse(args);
+        const { helpScoutDocsClient, config, logger } = this.services.resolve(['helpScoutDocsClient', 'config', 'logger']);
+        // Import site resolver
+        const { siteResolver } = await import('../utils/site-resolver.js');
+        // Determine which site to use
+        let targetSiteId = input.siteId;
+        let siteName;
+        // If no specific site ID provided, try to resolve from query or use default
+        if (!targetSiteId && (input.query || config.helpscout.defaultDocsSiteId)) {
+            const match = await siteResolver.resolveSite(input.query || '', config.helpscout.defaultDocsSiteId);
+            if (match) {
+                targetSiteId = match.site.id;
+                siteName = match.site.name || match.site.subdomain;
+                logger.info('Resolved site from query', {
+                    query: input.query,
+                    site: siteName,
+                    matchReason: match.matchReason
+                });
+            }
+        }
+        const params = {
+            page: input.page,
+            pageSize: input.pageSize,
+            sort: input.sort,
+            order: input.order,
+        };
+        if (targetSiteId) {
+            params.siteId = targetSiteId;
+        }
+        if (input.visibility !== 'all') {
+            params.visibility = input.visibility;
+        }
+        try {
+            logger.info('Fetching Docs collections', { params });
+            const response = await helpScoutDocsClient.get('/collections', params);
+            logger.debug('Collections response', {
+                hasItems: !!response.items,
+                itemCount: response.items?.length || 0,
+                responseKeys: Object.keys(response)
+            });
+            // Check if we have collections
+            if (!response.items || response.items.length === 0) {
+                // If no siteId was provided, suggest getting sites first
+                if (!input.siteId) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    collections: [],
+                                    pagination: response.page ? {
+                                        page: response.page,
+                                        pages: response.pages || 0,
+                                        count: response.count || 0,
+                                    } : {},
+                                }),
+                            },
+                        ],
+                    };
+                }
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                collections: [],
+                                pagination: response.page ? {
+                                    page: response.page,
+                                    pages: response.pages || 0,
+                                    count: response.count || 0,
+                                } : {},
+                            }),
+                        },
+                    ],
+                };
+            }
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            collections: isVerbose(args) ? response.items : response.items.map((c) => ({ id: c.id, siteId: c.siteId, name: c.name, visibility: c.visibility, publicUrl: c.publicUrl, articleCount: c.publishedArticleCount ?? c.articleCount })),
+                            pagination: {
+                                page: response.page,
+                                pages: response.pages,
+                                count: response.count,
+                            },
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            logger.error('Failed to get collections', { error, params });
+            throw error;
+        }
+    }
+    async listDocsCategories(args) {
+        const input = ListDocsCategoriesInputSchema.parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        const response = await helpScoutDocsClient.get(`/collections/${input.collectionId}/categories`, {
+            page: input.page,
+            sort: input.sort,
+            order: input.order,
+        });
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        categories: isVerbose(args) ? (response.items || []) : (response.items || []).map((c) => ({ id: c.id, name: c.name, collectionId: c.collectionId, visibility: c.visibility, articleCount: c.publishedArticleCount ?? c.articleCount })),
+                        pagination: {
+                            page: response.page,
+                            pages: response.pages,
+                            count: response.count,
+                        },
+                    }),
+                },
+            ],
+        };
+    }
+    async listDocsArticles(args) {
+        const input = ListDocsArticlesMergedInputSchema.parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        const params = {
+            page: input.page,
+            pageSize: input.pageSize,
+            sort: input.sort,
+            order: input.order,
+        };
+        if (input.status !== 'all') {
+            params.status = input.status;
+        }
+        const endpoint = input.collectionId
+            ? `/collections/${input.collectionId}/articles`
+            : `/categories/${input.categoryId}/articles`;
+        const response = await helpScoutDocsClient.get(endpoint, params);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        articles: isVerbose(args) ? (response.items || []) : (response.items || []).map((a) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, viewCount: a.viewCount, collectionId: a.collectionId })),
+                        pagination: {
+                            page: response.page,
+                            pages: response.pages,
+                            count: response.count,
+                        },
+                    }),
+                },
+            ],
+        };
+    }
+    async getDocsArticle(args) {
+        const input = GetDocsArticleInputSchema.parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        const verbose = isVerbose(args);
+        const endpoint = `/articles/${input.articleId}`;
+        const params = {};
+        if (input.draft)
+            params.draft = true;
+        const article = await helpScoutDocsClient.get(endpoint, params);
+        // Verbose: return full article with all fields
+        if (verbose) {
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            article: {
+                                ...article,
+                                text: config.security.allowPii ? stripCdata(article.text) : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
+                            },
+                        }),
+                    }],
+            };
+        }
+        // Slim: key metadata + content (without _links, styles, etc.)
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        article: {
+                            id: article.id,
+                            name: article.name,
+                            status: article.status,
+                            publicUrl: article.publicUrl,
+                            collectionId: article.collectionId,
+                            categories: article.categories,
+                            related: article.related,
+                            viewCount: article.viewCount,
+                            text: config.security.allowPii ? stripCdata(article.text) : '[REDACTED - Set REDACT_MESSAGE_CONTENT=false to view article content]',
+                            createdAt: article.createdAt,
+                            updatedAt: article.updatedAt,
+                        },
+                    }),
+                }],
+        };
+    }
+    async updateDocsArticle(args) {
+        const input = UpdateDocsArticleInputSchema.parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        // Build update payload
+        const updateData = {};
+        if (input.name !== undefined)
+            updateData.name = input.name;
+        if (input.text !== undefined)
+            updateData.text = collapseBlockWhitespace(input.text);
+        if (input.status !== undefined)
+            updateData.status = input.status;
+        if (input.categories !== undefined)
+            updateData.categories = input.categories;
+        if (input.related !== undefined)
+            updateData.related = input.related;
+        const updatedArticle = await helpScoutDocsClient.update(`/articles/${input.articleId}`, updateData);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        article: updatedArticle,
+                    }),
+                },
+            ],
+        };
+    }
+    async updateDocsEntity(args) {
+        const rawArgs = (args && typeof args === 'object') ? args : {};
+        const normalizedArgs = rawArgs.type ? rawArgs : rawArgs.collectionId ? { ...rawArgs, type: 'collection', id: rawArgs.collectionId } :
+            rawArgs.categoryId ? { ...rawArgs, type: 'category', id: rawArgs.categoryId } :
+                rawArgs;
+        const input = UpdateDocsEntityInputSchema.parse(normalizedArgs);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        const updateData = {};
+        if (input.name !== undefined)
+            updateData.name = input.name;
+        if (input.description !== undefined)
+            updateData.description = input.description;
+        if (input.visibility !== undefined)
+            updateData.visibility = input.visibility;
+        if (input.order !== undefined)
+            updateData.order = input.order;
+        const endpoint = input.type === 'collection' ? `/collections/${input.id}` : `/categories/${input.id}`;
+        const updatedEntity = await helpScoutDocsClient.update(endpoint, updateData);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        [input.type]: updatedEntity,
+                    }),
+                },
+            ],
+        };
+    }
+    async getTopDocsArticles(args) {
+        const input = z.object({
+            query: z.string().optional(),
+            collectionId: z.string().optional(),
+            limit: z.number().min(1).max(200).default(100),
+            status: z.enum(['all', 'published', 'notpublished']).default('published'),
+        }).parse(args);
+        const { helpScoutDocsClient, config, logger } = this.services.resolve(['helpScoutDocsClient', 'config', 'logger']);
+        // Import collection resolver
+        const { collectionResolver } = await import('../utils/collection-resolver.js');
+        try {
+            // Determine which collection to use
+            let targetCollectionId = input.collectionId;
+            let collectionName;
+            let siteName;
+            // If no specific collection ID provided, try to resolve from query or use default
+            if (!targetCollectionId && (input.query || config.helpscout.defaultDocsCollectionId)) {
+                const match = await collectionResolver.resolveCollection(input.query || '', config.helpscout.defaultDocsCollectionId);
+                if (match) {
+                    targetCollectionId = match.collection.id;
+                    collectionName = match.collection.name;
+                    siteName = match.site.name || match.site.subdomain;
+                    logger.info('Resolved collection from query', {
+                        query: input.query,
+                        collection: collectionName,
+                        site: siteName,
+                        matchReason: match.matchReason
+                    });
+                }
+            }
+            // Set up parameters for API call
+            const params = {
+                page: 1,
+                pageSize: Math.min(input.limit, DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE),
+                sort: 'popularity', // Sort by popularity (views)
+                order: 'desc',
+            };
+            if (input.status !== 'all') {
+                params.status = input.status;
+            }
+            let response;
+            let allArticles = [];
+            if (targetCollectionId) {
+                // Get articles from specific collection
+                // If we need more than one page worth, paginate
+                let page = 1;
+                let hasMore = true;
+                while (hasMore && allArticles.length < input.limit) {
+                    const pageParams = { ...params, page };
+                    const pageResponse = await helpScoutDocsClient.get(`/collections/${targetCollectionId}/articles`, pageParams);
+                    if (pageResponse.items) {
+                        allArticles.push(...pageResponse.items);
+                    }
+                    hasMore = page < pageResponse.pages;
+                    page++;
+                    // Stop if we have enough articles
+                    if (allArticles.length >= input.limit) {
+                        allArticles = allArticles.slice(0, input.limit);
+                        hasMore = false;
+                    }
+                }
+                // Create a response object for consistency
+                response = {
+                    items: allArticles,
+                    page: 1,
+                    pages: Math.ceil(allArticles.length / params.pageSize),
+                    count: allArticles.length
+                };
+            }
+            else {
+                // Try to get all articles across all sites
+                // First, get all sites
+                const sitesResponse = await helpScoutDocsClient.get('/sites', {
+                    page: 1,
+                });
+                if (!sitesResponse.items || sitesResponse.items.length === 0) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    error: 'No Docs sites found',
+                                }),
+                            },
+                        ],
+                    };
+                }
+                // Get collections from the first site
+                const siteId = sitesResponse.items[0].id;
+                const collectionsResponse = await helpScoutDocsClient.get('/collections', { siteId, page: 1, pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE });
+                if (!collectionsResponse.items || collectionsResponse.items.length === 0) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    error: 'No collections found',
+                                }),
+                            },
+                        ],
+                    };
+                }
+                // Aggregate articles from all collections
+                const allArticles = [];
+                for (const collection of collectionsResponse.items.slice(0, 5)) { // Limit to first 5 collections
+                    try {
+                        const articlesResponse = await helpScoutDocsClient.get(`/collections/${collection.id}/articles`, params);
+                        if (articlesResponse.items) {
+                            allArticles.push(...articlesResponse.items);
+                        }
+                    }
+                    catch (error) {
+                        logger.warn(`Failed to get articles from collection ${collection.id}`, { error });
+                    }
+                }
+                // Sort all articles by popularity and take top N
+                const sortedArticles = allArticles
+                    .sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0))
+                    .slice(0, input.limit);
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                topArticles: sortedArticles.map(article => ({
+                                    id: article.id,
+                                    title: article.name,
+                                    slug: article.slug || article.id,
+                                    status: article.status,
+                                    views: article.viewCount || 0,
+                                    collectionId: article.collectionId,
+                                    createdAt: article.createdAt,
+                                    updatedAt: article.updatedAt,
+                                })),
+                                totalArticles: sortedArticles.length,
+                            }),
+                        },
+                    ],
+                };
+            }
+            // Return articles from specific collection
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            topArticles: response.items.map(article => ({
+                                id: article.id,
+                                title: article.name,
+                                slug: article.slug || article.id,
+                                status: article.status,
+                                views: article.viewCount || 0,
+                                collectionId: article.collectionId,
+                                createdAt: article.createdAt,
+                                updatedAt: article.updatedAt,
+                            })),
+                            totalArticles: response.count,
+                            pagination: {
+                                page: response.page,
+                                pages: response.pages,
+                                count: response.count,
+                            },
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            logger.error('Failed to get top Docs articles', { error });
+            // Provide helpful error message
+            if (error instanceof Error && error.message.includes('401')) {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                error: 'Authentication failed',
+                            }),
+                        },
+                    ],
+                };
+            }
+            throw error;
+        }
+    }
+    async testDocsConnection() {
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        const results = {
+            timestamp: new Date().toISOString(),
+            tests: {}
+        };
+        // Test 1: Check configuration
+        if (!config.helpscout.docsApiKey) {
+            results.tests.configuration = {
+                success: false,
+                error: 'HELPSCOUT_DOCS_API_KEY environment variable is not set'
+            };
+        }
+        else {
+            results.tests.configuration = {
+                success: true,
+                message: 'Docs API key is configured'
+            };
+        }
+        // Test 2: Test API connection
+        try {
+            const connectionTest = await helpScoutDocsClient.testConnection();
+            results.tests.connection = {
+                success: connectionTest,
+                message: connectionTest ? 'Successfully connected to Docs API' : 'Connection test failed'
+            };
+        }
+        catch (error) {
+            results.tests.connection = {
+                success: false,
+                error: error instanceof Error ? error.message : String(error)
+            };
+        }
+        // Test 3: Try to get sites
+        try {
+            const sitesResponse = await helpScoutDocsClient.get('/sites', { page: 1 });
+            results.tests.sites = {
+                success: true,
+                siteCount: sitesResponse.items?.length || 0,
+                sites: (sitesResponse.items || []).map((s) => ({ id: s.id, title: s.title, subDomain: s.subDomain })),
+            };
+            // Test 3a: If we have sites, try to get collections from the first one
+            if (sitesResponse.items && sitesResponse.items.length > 0) {
+                const firstSiteId = sitesResponse.items[0].id;
+                try {
+                    const collectionsResponse = await helpScoutDocsClient.get('/collections', {
+                        siteId: firstSiteId,
+                        page: 1
+                    });
+                    results.tests.collections = {
+                        success: true,
+                        siteId: firstSiteId,
+                        collectionCount: collectionsResponse.items?.length || 0,
+                        collections: (collectionsResponse.items || []).map((c) => ({ id: c.id, name: c.name, articleCount: c.publishedArticleCount })),
+                    };
+                }
+                catch (error) {
+                    const err = error;
+                    results.tests.collections = {
+                        success: false,
+                        siteId: firstSiteId,
+                        error: error instanceof Error ? error.message : 'Unknown error',
+                        statusCode: err.response?.status,
+                        errorCode: err.code,
+                        details: err.details
+                    };
+                }
+            }
+        }
+        catch (error) {
+            const err = error;
+            results.tests.sites = {
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error',
+                statusCode: err.response?.status,
+                errorCode: err.code
+            };
+        }
+        // Determine overall status
+        const allTestsPassed = Object.values(results.tests).every((test) => test.success);
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        ...results,
+                        summary: {
+                            allTestsPassed,
+                        }
+                    }),
+                },
+            ],
+        };
+    }
+    async clearDocsCache() {
+        const { cache } = this.services.resolve(['cache']);
+        // Clear all docs-related cache entries
+        // Since we can't iterate over cache keys, we'll clear common patterns
+        const endpointsToClean = [
+            'DOCS:GET:/sites',
+            'DOCS:GET:/collections',
+            'DOCS:GET:/categories',
+            'DOCS:GET:/articles',
+        ];
+        for (const key of endpointsToClean) {
+            try {
+                cache.clear(key);
+            }
+            catch (_e) {
+                // Ignore errors for non-existent keys
+            }
+        }
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify({
+                        clearedPatterns: endpointsToClean,
+                    }),
+                },
+            ],
+        };
+    }
+    async listAllDocsCollections() {
+        const { collectionResolver } = await import('../utils/collection-resolver.js');
+        try {
+            const collectionsMap = await collectionResolver.getAllCollections();
+            const result = [];
+            for (const [site, collections] of collectionsMap) {
+                result.push({
+                    site: {
+                        id: site.id,
+                        name: site.name || site.subdomain,
+                        subdomain: site.subdomain,
+                    },
+                    collections: collections.map(col => ({
+                        id: col.id,
+                        name: col.name,
+                        slug: col.slug,
+                        articleCount: col.articleCount,
+                        publishedArticleCount: col.publishedArticleCount,
+                        visibility: col.visibility,
+                    }))
+                });
+            }
+            // Sort by site name
+            result.sort((a, b) => (a.site.name || '').localeCompare(b.site.name || ''));
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            sites: result,
+                            totalSites: result.length,
+                            totalCollections: result.reduce((sum, site) => sum + site.collections.length, 0),
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to list collections',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async getSiteCollections(args) {
+        const input = z.object({
+            query: z.string().optional(),
+            siteId: z.string().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        try {
+            let targetSiteId;
+            // If siteId is provided directly, use it
+            if (input.siteId) {
+                targetSiteId = input.siteId;
+            }
+            // If query is provided, use NLP to find the site
+            else if (input.query) {
+                const { siteResolver } = await import('../utils/site-resolver.js');
+                const siteMatch = await siteResolver.resolveSite(input.query, config.helpscout.defaultDocsSiteId);
+                if (!siteMatch) {
+                    return {
+                        content: [
+                            {
+                                type: 'text',
+                                text: JSON.stringify({
+                                    error: 'No matching site found',
+                                }),
+                            },
+                        ],
+                    };
+                }
+                targetSiteId = siteMatch.site.id;
+            }
+            // Use default site if available
+            else if (config.helpscout.defaultDocsSiteId) {
+                targetSiteId = config.helpscout.defaultDocsSiteId;
+            }
+            // No way to determine site
+            else {
+                return {
+                    content: [
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                error: 'No site specified',
+                            }),
+                        },
+                    ],
+                };
+            }
+            // Fetch collections for the site
+            const response = await helpScoutDocsClient.get('/collections', {
+                siteId: targetSiteId,
+                page: 1,
+                pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
+            });
+            const collections = response.items || [];
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            collections: collections.map(col => ({
+                                id: col.id,
+                                name: col.name,
+                                slug: col.slug,
+                                articleCount: col.articleCount,
+                                publishedArticleCount: col.publishedArticleCount,
+                                visibility: col.visibility,
+                                order: col.order,
+                            })),
+                            totalCollections: collections.length,
+                            page: response.page || 1,
+                            totalPages: response.pages || 1,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to get site collections',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async searchDocsArticles(args) {
+        const input = z.object({
+            query: z.string(),
+            collectionId: z.string().optional(),
+            categoryId: z.string().optional(),
+            visibility: z.enum(['public', 'private', 'all']).default('all'),
+            status: z.enum(['all', 'published', 'notpublished']).default('published'),
+            page: z.number().default(1),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const params = {
+                query: input.query,
+                page: input.page,
+                pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
+            };
+            if (input.collectionId)
+                params.collectionId = input.collectionId;
+            if (input.categoryId)
+                params.categoryId = input.categoryId;
+            if (input.visibility !== 'all')
+                params.visibility = input.visibility;
+            if (input.status !== 'all')
+                params.status = input.status;
+            const response = await helpScoutDocsClient.get('/search/articles', params);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            results: isVerbose(args) ? (response.items || []) : (response.items || []).map((a) => ({ id: a.id, name: a.name, status: a.status, publicUrl: a.publicUrl, collectionId: a.collectionId, preview: a.preview || stripCdata(a.text)?.substring(0, 200) })),
+                            pagination: {
+                                page: response.page,
+                                pages: response.pages,
+                                count: response.count,
+                            },
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to search articles',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async createDocsArticle(args) {
+        const input = z.object({
+            collectionId: z.string(),
+            name: z.string(),
+            text: z.string(),
+            categoryIds: z.array(z.string()).optional(),
+            status: z.enum(['published', 'notpublished']).default('notpublished'),
+            visibility: z.enum(['public', 'private']).default('public'),
+            slug: z.string().optional(),
+            tags: z.array(z.string()).optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const articleData = {
+                collectionId: input.collectionId,
+                name: input.name,
+                text: collapseBlockWhitespace(input.text),
+                status: input.status,
+                visibility: input.visibility,
+            };
+            if (input.categoryIds)
+                articleData.categories = input.categoryIds;
+            if (input.slug)
+                articleData.slug = input.slug;
+            if (input.tags)
+                articleData.tags = input.tags;
+            const response = await helpScoutDocsClient.create('/articles', articleData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            article: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create article',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsArticle(args) {
+        const input = z.object({
+            articleId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        // Check if deletion is allowed
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Article deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable article deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/articles/${input.articleId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete article',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async updateDocsViewCount(args) {
+        const input = z.object({
+            articleId: z.string(),
+            count: z.number().min(1).default(1),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            await helpScoutDocsClient.update(`/articles/${input.articleId}/views`, {
+                count: input.count,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            viewsAdded: input.count,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to update view count',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async listRelatedDocsArticles(args) {
+        const input = z.object({
+            articleId: z.string(),
+            status: z.enum(['all', 'published', 'notpublished']).default('published'),
+            sort: z.enum(['updatedAt', 'createdAt', 'name', 'popularity', 'order']).default('popularity'),
+            order: z.enum(['asc', 'desc']).default('desc'),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const params = {
+                status: input.status,
+                sort: input.sort,
+                order: input.order,
+                pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE,
+            };
+            const response = await helpScoutDocsClient.get(`/articles/${input.articleId}/related`, params);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            relatedArticles: response.items || [],
+                            count: response.count || 0,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to get related articles',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async createDocsCategory(args) {
+        const input = z.object({
+            collectionId: z.string(),
+            name: z.string(),
+            visibility: z.enum(['public', 'private']).default('public'),
+            order: z.number().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const categoryData = {
+                collectionId: input.collectionId,
+                name: input.name,
+                visibility: input.visibility,
+            };
+            if (input.order !== undefined)
+                categoryData.order = input.order;
+            const response = await helpScoutDocsClient.create('/categories', categoryData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            category: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create category',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsCategory(args) {
+        const input = z.object({
+            categoryId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        // Check if deletion is allowed
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Category deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable category deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/categories/${input.categoryId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            categoryId: input.categoryId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete category',
+                            message: error instanceof Error ? error.message : String(error),
+                            categoryId: input.categoryId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async createDocsCollection(args) {
+        const input = z.object({
+            siteId: z.string(),
+            name: z.string(),
+            visibility: z.enum(['public', 'private']).default('public'),
+            order: z.number().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const collectionData = {
+                siteId: input.siteId,
+                name: input.name,
+                visibility: input.visibility,
+            };
+            if (input.order !== undefined)
+                collectionData.order = input.order;
+            const response = await helpScoutDocsClient.create('/collections', collectionData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            collection: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create collection',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsCollection(args) {
+        const input = z.object({
+            collectionId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        // Check if deletion is allowed
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Collection deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable collection deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/collections/${input.collectionId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            collectionId: input.collectionId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete collection',
+                            message: error instanceof Error ? error.message : String(error),
+                            collectionId: input.collectionId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Article Revisions implementations
+    async listDocsArticleRevisions(args) {
+        const input = z.object({
+            articleId: z.string(),
+            page: z.number().default(1),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.get(`/articles/${input.articleId}/revisions`, { page: input.page, pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            revisions: response.items || [],
+                            pagination: {
+                                page: response.page,
+                                pages: response.pages,
+                                count: response.count,
+                            },
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to list article revisions',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async getDocsArticleRevision(args) {
+        const input = z.object({
+            revisionId: z.string(),
+            draft: z.boolean().default(false),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const params = {};
+            if (input.draft)
+                params.draft = true;
+            const response = await helpScoutDocsClient.get(`/revisions/${input.revisionId}`, params);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            revision: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to get article revision',
+                            message: error instanceof Error ? error.message : String(error),
+                            revisionId: input.revisionId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Article Drafts implementations
+    async saveDocsArticleDraft(args) {
+        const input = z.object({
+            articleId: z.string(),
+            text: z.string(),
+            name: z.string().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const draftData = {
+                text: collapseBlockWhitespace(input.text),
+            };
+            if (input.name)
+                draftData.name = input.name;
+            const response = await helpScoutDocsClient.update(`/articles/${input.articleId}/drafts`, draftData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            draft: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to save article draft',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsArticleDraft(args) {
+        const rawArgs = (args && typeof args === 'object') ? args : {};
+        // Accept legacy 'draftId' param for backward compat
+        const normalizedArgs = rawArgs.articleId ? rawArgs : rawArgs.draftId ? { articleId: rawArgs.draftId } : rawArgs;
+        const input = z.object({
+            articleId: z.string(),
+        }).parse(normalizedArgs);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Draft deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable draft deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/articles/${input.articleId}/drafts`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete article draft',
+                            message: error instanceof Error ? error.message : String(error),
+                            articleId: input.articleId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Article Upload implementation
+    async uploadDocsArticle(args) {
+        const input = z.object({
+            collectionId: z.string(),
+            filePath: z.string(),
+            name: z.string(),
+            categoryIds: z.array(z.string()).optional(),
+            status: z.enum(['published', 'notpublished']).default('notpublished'),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const { createReadStream } = await import('fs');
+            const path = await import('path');
+            const { default: FormData } = await import('form-data');
+            const apiKey = await helpScoutDocsClient.getApiKey();
+            const ext = path.extname(input.filePath).toLowerCase();
+            const fileType = ext === '.md' || ext === '.markdown' ? 'markdown' : ext === '.html' || ext === '.htm' ? 'html' : 'text';
+            const formData = new FormData();
+            formData.append('key', apiKey);
+            formData.append('collectionId', input.collectionId);
+            formData.append('name', input.name);
+            formData.append('type', fileType);
+            formData.append('file', createReadStream(input.filePath), { filename: path.basename(input.filePath) });
+            if (input.categoryIds?.length) {
+                formData.append('categoryId', input.categoryIds[0]);
+            }
+            const response = await helpScoutDocsClient.postFormData('/articles/upload?reload=true', formData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            article: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to upload article',
+                            message: error instanceof Error ? error.message : String(error),
+                            filePath: input.filePath,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Assets implementations
+    async createDocsArticleAsset(args) {
+        const input = z.object({
+            articleId: z.string(),
+            filePath: z.string(),
+            assetType: z.enum(['image', 'attachment']).default('image'),
+            fileName: z.string().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const { createReadStream } = await import('fs');
+            const path = await import('path');
+            const { default: FormData } = await import('form-data');
+            const fileName = input.fileName || path.basename(input.filePath);
+            const apiKey = await helpScoutDocsClient.getApiKey();
+            const formData = new FormData();
+            formData.append('key', apiKey);
+            formData.append('articleId', input.articleId);
+            formData.append('assetType', input.assetType);
+            formData.append('file', createReadStream(input.filePath), { filename: fileName });
+            const response = await helpScoutDocsClient.postFormData('/assets/article', formData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            asset: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create article asset',
+                            message: error instanceof Error ? error.message : String(error),
+                            filePath: input.filePath,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async createDocsSettingsAsset(args) {
+        const input = z.object({
+            siteId: z.string(),
+            filePath: z.string(),
+            assetType: z.enum(['logo', 'favicon', 'touchicon']),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const { createReadStream } = await import('fs');
+            const path = await import('path');
+            const { default: FormData } = await import('form-data');
+            const apiKey = await helpScoutDocsClient.getApiKey();
+            const fileName = path.basename(input.filePath);
+            const formData = new FormData();
+            formData.append('key', apiKey);
+            formData.append('assetType', input.assetType);
+            formData.append('file', createReadStream(input.filePath), { filename: fileName });
+            const response = await helpScoutDocsClient.postFormData('/assets/settings', formData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            asset: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create settings asset',
+                            message: error instanceof Error ? error.message : String(error),
+                            filePath: input.filePath,
+                            assetType: input.assetType,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Single Resource Getters implementations
+    async getDocsEntity(args) {
+        const rawArgs = (args && typeof args === 'object') ? args : {};
+        const normalizedArgs = rawArgs.type ? rawArgs : rawArgs.categoryId ? { type: 'category', id: rawArgs.categoryId } :
+            rawArgs.collectionId ? { type: 'collection', id: rawArgs.collectionId } :
+                rawArgs.siteId ? { type: 'site', id: rawArgs.siteId } :
+                    rawArgs;
+        const input = GetDocsEntityInputSchema.parse(normalizedArgs);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        const endpointByType = {
+            site: `/sites/${input.id}`,
+            collection: `/collections/${input.id}`,
+            category: `/categories/${input.id}`,
+        };
+        try {
+            const response = await helpScoutDocsClient.get(endpointByType[input.type]);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            [input.type]: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: `Failed to get ${input.type}`,
+                            message: error instanceof Error ? error.message : String(error),
+                            id: input.id,
+                            type: input.type,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Category Order implementation
+    async updateDocsCategoryOrder(args) {
+        const input = z.object({
+            collectionId: z.string(),
+            categoryIds: z.array(z.string()),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            await helpScoutDocsClient.update(`/collections/${input.collectionId}/categories`, {
+                categories: input.categoryIds,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            newOrder: input.categoryIds,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to update category order',
+                            message: error instanceof Error ? error.message : String(error),
+                            collectionId: input.collectionId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Redirects implementations
+    async listDocsRedirects(args) {
+        const input = z.object({
+            siteId: z.string(),
+            page: z.number().default(1),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.get(`/redirects/site/${input.siteId}`, { page: input.page, pageSize: DOCS_TOOL_CONSTANTS.MAX_PAGE_SIZE });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirects: response.items || [],
+                            pagination: {
+                                page: response.page,
+                                pages: response.pages,
+                                count: response.count,
+                            },
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to list redirects',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async getDocsRedirect(args) {
+        const input = z.object({
+            redirectId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.get(`/redirects/${input.redirectId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirect: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to get redirect',
+                            message: error instanceof Error ? error.message : String(error),
+                            redirectId: input.redirectId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async findDocsRedirect(args) {
+        const input = z.object({
+            siteId: z.string(),
+            url: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.get('/redirects', {
+                siteId: input.siteId,
+                url: input.url,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirect: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to find redirect',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                            url: input.url,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async createDocsRedirect(args) {
+        const input = z.object({
+            siteId: z.string(),
+            urlMapping: z.string(),
+            redirect: z.string(),
+            type: z.number().refine(val => val === 301 || val === 302).default(301),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.create('/redirects', {
+                siteId: input.siteId,
+                urlMapping: input.urlMapping,
+                redirect: input.redirect,
+                type: input.type,
+            });
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirect: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create redirect',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async updateDocsRedirect(args) {
+        const input = z.object({
+            redirectId: z.string(),
+            urlMapping: z.string().optional(),
+            redirect: z.string().optional(),
+            type: z.number().refine(val => val === 301 || val === 302).optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const updateData = {};
+            if (input.urlMapping)
+                updateData.urlMapping = input.urlMapping;
+            if (input.redirect)
+                updateData.redirect = input.redirect;
+            if (input.type)
+                updateData.type = input.type;
+            const response = await helpScoutDocsClient.update(`/redirects/${input.redirectId}`, updateData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirect: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to update redirect',
+                            message: error instanceof Error ? error.message : String(error),
+                            redirectId: input.redirectId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsRedirect(args) {
+        const input = z.object({
+            redirectId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Redirect deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable redirect deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/redirects/${input.redirectId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            redirectId: input.redirectId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete redirect',
+                            message: error instanceof Error ? error.message : String(error),
+                            redirectId: input.redirectId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Site Management implementations
+    async createDocsSite(args) {
+        const input = z.object({
+            name: z.string(),
+            subdomain: z.string(),
+            cname: z.string().optional(),
+            logoUrl: z.string().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const siteData = {
+                name: input.name,
+                subdomain: input.subdomain,
+            };
+            if (input.cname)
+                siteData.cname = input.cname;
+            if (input.logoUrl)
+                siteData.logoUrl = input.logoUrl;
+            const response = await helpScoutDocsClient.create('/sites', siteData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            site: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to create site',
+                            message: error instanceof Error ? error.message : String(error),
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async updateDocsSite(args) {
+        const input = z.object({
+            siteId: z.string(),
+            name: z.string().optional(),
+            subdomain: z.string().optional(),
+            cname: z.string().optional(),
+            logoUrl: z.string().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const updateData = {};
+            if (input.name)
+                updateData.name = input.name;
+            if (input.subdomain)
+                updateData.subdomain = input.subdomain;
+            if (input.cname !== undefined)
+                updateData.cname = input.cname;
+            if (input.logoUrl !== undefined)
+                updateData.logoUrl = input.logoUrl;
+            const response = await helpScoutDocsClient.update(`/sites/${input.siteId}`, updateData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            site: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to update site',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async deleteDocsSite(args) {
+        const input = z.object({
+            siteId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient, config } = this.services.resolve(['helpScoutDocsClient', 'config']);
+        if (!config.helpscout.allowDocsDelete) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Site deletion is disabled',
+                            message: 'Set HELPSCOUT_ALLOW_DOCS_DELETE=true to enable site deletion',
+                        }),
+                    },
+                ],
+            };
+        }
+        try {
+            await helpScoutDocsClient.delete(`/sites/${input.siteId}`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to delete site',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    // Site Restrictions implementations
+    async getDocsSiteRestrictions(args) {
+        const input = z.object({
+            siteId: z.string(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const response = await helpScoutDocsClient.get(`/sites/${input.siteId}/restrictions`);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            restrictions: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to get site restrictions',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+    async updateDocsSiteRestrictions(args) {
+        const input = z.object({
+            siteId: z.string(),
+            restricted: z.boolean().optional(),
+            allowedDomains: z.array(z.string()).optional(),
+            ssoEnabled: z.boolean().optional(),
+        }).parse(args);
+        const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+        try {
+            const updateData = {};
+            if (input.restricted !== undefined)
+                updateData.restricted = input.restricted;
+            if (input.allowedDomains)
+                updateData.allowedDomains = input.allowedDomains;
+            if (input.ssoEnabled !== undefined)
+                updateData.ssoEnabled = input.ssoEnabled;
+            const response = await helpScoutDocsClient.update(`/sites/${input.siteId}/restrictions`, updateData);
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            restrictions: response,
+                        }),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Failed to update site restrictions',
+                            message: error instanceof Error ? error.message : String(error),
+                            siteId: input.siteId,
+                        }),
+                    },
+                ],
+            };
+        }
+    }
+}
+// Class is already exported above
+//# sourceMappingURL=docs-tools.js.map

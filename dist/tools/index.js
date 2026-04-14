@@ -1,0 +1,1939 @@
+import { helpScoutClient } from '../utils/helpscout-client.js';
+import { createMcpToolError, isApiError } from '../utils/mcp-errors.js';
+import { HelpScoutAPIConstraints } from '../utils/api-constraints.js';
+import { DocsToolHandler } from './docs-tools.js';
+import { ReportsToolHandler } from './reports-tools.js';
+import { compactTool } from './tool-utils.js';
+import { logger } from '../utils/logger.js';
+import { config, isVerbose } from '../utils/config.js';
+import { cache } from '../utils/cache.js';
+import { z } from 'zod';
+import TurndownService from 'turndown';
+import { detectMimeType, extForMime, isImageMime } from '../utils/mime.js';
+/**
+ * Constants for tool operations
+ */
+const TOOL_CONSTANTS = {
+    // API pagination defaults
+    DEFAULT_PAGE_SIZE: 50,
+    MAX_PAGE_SIZE: 100,
+    MAX_THREAD_SIZE: 200,
+    DEFAULT_THREAD_SIZE: 200,
+    // Search limits
+    MAX_SEARCH_TERMS: 10,
+    DEFAULT_TIMEFRAME_DAYS: 60,
+    DEFAULT_LIMIT_PER_STATUS: 25,
+    // Sort configuration
+    DEFAULT_SORT_FIELD: 'createdAt',
+    DEFAULT_SORT_ORDER: 'desc',
+    // Cache and performance
+    MAX_CONVERSATION_ID_LENGTH: 20,
+    // Search locations
+    SEARCH_LOCATIONS: {
+        BODY: 'body',
+        SUBJECT: 'subject',
+        BOTH: 'both'
+    },
+    // Conversation statuses
+    STATUSES: {
+        ACTIVE: 'active',
+        PENDING: 'pending',
+        CLOSED: 'closed',
+        SPAM: 'spam'
+    }
+};
+const CONVERSATION_TOOL_DESCRIPTIONS = {
+    searchInboxes: 'List inboxes or filter them by name.',
+    searchConversations: 'Search or list conversations by status, dates, content, tags, or inbox.',
+    getConversationSummary: 'Get the first customer message and latest staff reply.',
+    getThreads: 'Get conversation threads or a transcript view.',
+    getAttachment: 'Download a conversation attachment to a temp file.',
+    getServerTime: 'Get the current server time.',
+    structuredConversationFilter: 'Filter conversations by IDs and structured fields.',
+    createReply: 'Create a draft reply by default, or send when allowed.',
+    createNote: 'Create an internal note on a conversation.',
+    getConversation: 'Get a conversation by ID.',
+    createConversation: 'Create a new conversation.',
+    updateConversation: 'Update a conversation.',
+};
+const LEGACY_DOCS_TOOL_NAMES = new Set([
+    'listDocsArticlesByCollection',
+    'listDocsArticlesByCategory',
+    'updateDocsCollection',
+    'updateDocsCategory',
+    'getTopDocsArticles',
+    'testDocsConnection',
+    'clearDocsCache',
+    'listAllDocsCollections',
+    'getDocsCategory',
+    'getDocsCollection',
+    'getDocsSite',
+]);
+const LEGACY_REPORT_TOOL_NAMES = new Set([
+    'getChatReport',
+    'getEmailReport',
+    'getPhoneReport',
+    'getUserReport',
+    'getCompanyReport',
+    'getHappinessReport',
+    'getDocsReport',
+]);
+import { SearchInboxesInputSchema, SearchConversationsInputSchema, GetThreadsInputSchema, GetConversationSummaryInputSchema, StructuredConversationFilterInputSchema, CreateReplyInputSchema, CreateNoteInputSchema, GetConversationInputSchema, CreateConversationInputSchema, UpdateConversationInputSchema, } from '../schema/types.js';
+export class ToolHandler {
+    constructor(container) {
+        this.callHistory = [];
+        // Initialize DocsToolHandler with the same container
+        this.docsToolHandler = new DocsToolHandler(container);
+        // Initialize ReportsToolHandler with the same container
+        this.reportsToolHandler = new ReportsToolHandler(container);
+    }
+    /**
+     * Strip a raw Help Scout conversation object down to the fields that matter.
+     * The API returns huge objects with _links, _embedded, tag styles, photo URLs,
+     * closedByUser, source metadata, etc. — none of which the LLM needs.
+     */
+    slimConversation(conv) {
+        return {
+            id: conv.id,
+            number: conv.number,
+            subject: conv.subject,
+            status: conv.status,
+            preview: conv.preview,
+            mailboxId: conv.mailboxId,
+            assignee: conv.assignee ? {
+                id: conv.assignee.id,
+                first: conv.assignee.first || conv.assignee.firstName,
+                last: conv.assignee.last || conv.assignee.lastName,
+                email: conv.assignee.email,
+            } : null,
+            customer: conv.createdBy?.type === 'customer' ? {
+                id: conv.createdBy.id,
+                first: conv.createdBy.first || conv.createdBy.firstName,
+                last: conv.createdBy.last || conv.createdBy.lastName,
+                email: conv.createdBy.email,
+            } : conv.customer ? {
+                id: conv.customer.id,
+                first: conv.customer.first || conv.customer.firstName,
+                last: conv.customer.last || conv.customer.lastName,
+                email: conv.customer.email,
+            } : null,
+            tags: (conv.tags || []).map((t) => t.tag || t.name || t),
+            createdAt: conv.createdAt,
+            closedAt: conv.closedAt,
+            waitingSince: conv.customerWaitingSince?.friendly,
+        };
+    }
+    /**
+     * Fetch multiple pages from the Help Scout conversations API until we reach
+     * the desired count or run out of pages. Help Scout ignores the `size` param
+     * and always returns ~25 conversations per page, so we must paginate to get
+     * more than 25 results.
+     */
+    async fetchConversationPages(params, desiredCount, maxPages) {
+        const conversations = [];
+        let totalElements = 0;
+        let currentPage = 1;
+        let hasMore = true;
+        const effectiveMaxPages = maxPages || Math.ceil(desiredCount / 25) + 1;
+        while (conversations.length < desiredCount && hasMore && currentPage <= effectiveMaxPages) {
+            const response = await helpScoutClient.get('/conversations', { ...params, page: currentPage });
+            const pageConversations = response._embedded?.conversations || [];
+            conversations.push(...pageConversations);
+            totalElements = response.page?.totalElements || totalElements;
+            hasMore = !!response._links?.next;
+            currentPage++;
+        }
+        return { conversations, totalElements };
+    }
+    /**
+     * Fetch multiple pages of threads from a conversation until we reach
+     * the desired count or run out of pages.
+     */
+    async fetchThreadPages(conversationId, desiredCount) {
+        const threads = [];
+        let totalElements = 0;
+        let currentPage = 1;
+        let hasMore = true;
+        const maxPages = Math.ceil(desiredCount / 25) + 1;
+        while (threads.length < desiredCount && hasMore && currentPage <= maxPages) {
+            const response = await helpScoutClient.get(`/conversations/${conversationId}/threads`, { page: currentPage, size: desiredCount });
+            const pageThreads = response._embedded?.threads || [];
+            threads.push(...pageThreads);
+            totalElements = response.page?.totalElements || totalElements;
+            hasMore = !!response._links?.next;
+            currentPage++;
+        }
+        return { threads, totalElements };
+    }
+    /**
+     * Escape special characters in Help Scout query syntax to prevent injection
+     */
+    escapeQueryTerm(term) {
+        return term.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+    /**
+     * Append a createdAt date range to an existing Help Scout query string.
+     * Help Scout has no native createdAfter/createdBefore URL params, so we
+     * use query syntax: (createdAt:[start TO end]).
+     */
+    appendCreatedAtFilter(existingQuery, createdAfter, createdBefore) {
+        if (!createdAfter && !createdBefore)
+            return existingQuery;
+        // Validate date format to prevent query injection
+        const isoDatePattern = /^\d{4}-\d{2}-\d{2}(T[\d:.]+Z?)?$/;
+        if (createdAfter && !isoDatePattern.test(createdAfter)) {
+            throw new Error(`Invalid createdAfter date format: ${createdAfter}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+        }
+        if (createdBefore && !isoDatePattern.test(createdBefore)) {
+            throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 (e.g., 2024-01-15T00:00:00Z)`);
+        }
+        // Strip milliseconds (Help Scout rejects .xxx format)
+        const normalize = (d) => d.replace(/\.\d{3}Z$/, 'Z');
+        const start = createdAfter ? normalize(createdAfter) : '*';
+        const end = createdBefore ? normalize(createdBefore) : '*';
+        const clause = `(createdAt:[${start} TO ${end}])`;
+        if (!existingQuery)
+            return clause;
+        return `(${existingQuery}) AND ${clause}`;
+    }
+    /**
+     * Apply client-side createdBefore filter (Help Scout API does not support this natively).
+     */
+    applyCreatedBeforeFilter(conversations, createdBefore, context) {
+        const beforeDate = new Date(createdBefore);
+        if (isNaN(beforeDate.getTime())) {
+            throw new Error(`Invalid createdBefore date format: ${createdBefore}. Expected ISO 8601 format (e.g., 2023-01-15T00:00:00Z)`);
+        }
+        const originalCount = conversations.length;
+        const filtered = conversations.filter(conv => new Date(conv.createdAt) < beforeDate);
+        const removedCount = originalCount - filtered.length;
+        if (removedCount > 0) {
+            logger.warn(`Client-side createdBefore filter applied - ${context}`, {
+                originalCount,
+                filteredCount: filtered.length,
+                removedCount,
+                note: 'Help Scout API does not support createdBefore parameter natively'
+            });
+        }
+        return { filtered, wasFiltered: removedCount > 0, removedCount };
+    }
+    /**
+     * Build pagination info that distinguishes filtered count from API total.
+     */
+    buildFilteredPagination(filteredCount, apiPage, wasFiltered) {
+        if (!wasFiltered)
+            return apiPage;
+        return {
+            totalResults: filteredCount,
+            totalAvailable: apiPage?.totalElements,
+            note: `Results filtered client-side by createdBefore. totalResults shows filtered count (${filteredCount}), totalAvailable shows pre-filter API total (${apiPage?.totalElements}).`
+        };
+    }
+    /**
+     * Set the current user query for context-aware validation
+     */
+    setUserContext(userQuery) {
+        this.currentUserQuery = userQuery;
+    }
+    async listTools() {
+        const conversationTools = [
+            {
+                name: 'searchInboxes',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.searchInboxes,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Inbox name filter. Leave empty to return all inboxes.',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of results (1-${TOOL_CONSTANTS.MAX_PAGE_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_PAGE_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                    },
+                },
+            },
+            {
+                name: 'searchConversations',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.searchConversations,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        // --- Simple search / listing ---
+                        query: {
+                            type: 'string',
+                            description: 'Raw HelpScout query syntax. Omit to list all. Example: (body:"keyword")',
+                        },
+                        inboxId: {
+                            type: 'string',
+                            description: 'Inbox ID from server instructions',
+                        },
+                        tag: {
+                            type: 'string',
+                            description: 'Filter by tag name',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM],
+                            description: 'Filter by single status. Omit to search ALL statuses (active+pending+closed). Only set this if the user explicitly requests a specific status.',
+                        },
+                        statuses: {
+                            type: 'array',
+                            items: { type: 'string', enum: [TOOL_CONSTANTS.STATUSES.ACTIVE, TOOL_CONSTANTS.STATUSES.PENDING, TOOL_CONSTANTS.STATUSES.CLOSED, TOOL_CONSTANTS.STATUSES.SPAM] },
+                            description: 'Filter by multiple statuses. Omit to search ALL statuses. Only use if the user explicitly requests specific statuses.',
+                        },
+                        createdAfter: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created after this timestamp (ISO8601)',
+                        },
+                        createdBefore: {
+                            type: 'string',
+                            format: 'date-time',
+                            description: 'Filter conversations created before this timestamp (ISO8601)',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: 'Maximum number of results. Auto-paginates to fetch all.',
+                            minimum: 1,
+                            default: TOOL_CONSTANTS.DEFAULT_PAGE_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                        sort: {
+                            type: 'string',
+                            enum: ['createdAt', 'modifiedAt', 'number'],
+                            default: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
+                            description: 'Sort field',
+                        },
+                        order: {
+                            type: 'string',
+                            enum: ['asc', 'desc'],
+                            default: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
+                            description: 'Sort order',
+                        },
+                        // --- Keyword search (multi-status parallel) ---
+                        searchTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Keywords to search for (OR logic across all statuses). Example: ["billing", "refund"]',
+                        },
+                        searchIn: {
+                            type: 'array',
+                            items: { enum: ['body', 'subject', 'both'] },
+                            description: 'Where to search for terms (defaults to both body and subject)',
+                            default: ['both'],
+                        },
+                        timeframeDays: {
+                            type: 'number',
+                            description: `Number of days back to search (defaults to ${TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS}, used with searchTerms)`,
+                            minimum: 1,
+                            maximum: 365,
+                            default: TOOL_CONSTANTS.DEFAULT_TIMEFRAME_DAYS,
+                        },
+                        // --- Structured search (field-specific queries) ---
+                        contentTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Search terms to find in conversation body/content (OR combined)',
+                        },
+                        subjectTerms: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Search terms to find in conversation subject (OR combined)',
+                        },
+                        customerEmail: {
+                            type: 'string',
+                            description: 'Exact customer email to search for',
+                        },
+                        emailDomain: {
+                            type: 'string',
+                            description: 'Email domain to search for (e.g., "company.com")',
+                        },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Tag names to filter by (OR combined)',
+                        },
+                        // --- Transcript inclusion ---
+                        includeTranscripts: {
+                            type: 'boolean',
+                            default: false,
+                            description: 'When true, fetches message transcripts for each conversation (customer/staff dialogue, HTML stripped). Limit defaults to 10 when enabled. Higher limits with transcripts may be slow.',
+                        },
+                        transcriptMaxMessages: {
+                            type: 'number',
+                            default: 10,
+                            minimum: 1,
+                            maximum: 50,
+                            description: 'Max messages per conversation transcript (default 10). Only used when includeTranscripts is true.',
+                        },
+                    },
+                },
+            },
+            {
+                name: 'getConversationSummary',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.getConversationSummary,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to get summary for',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+            {
+                name: 'getThreads',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.getThreads,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to get threads for',
+                        },
+                        format: {
+                            type: 'string',
+                            enum: ['full', 'transcript'],
+                            default: 'full',
+                            description: 'Output format. "full" returns all threads with metadata. "transcript" returns only customer/staff messages as a minimal dialogue (strips notes, lineitems, HTML).',
+                        },
+                        limit: {
+                            type: 'number',
+                            description: `Maximum number of threads (1-${TOOL_CONSTANTS.MAX_THREAD_SIZE})`,
+                            minimum: 1,
+                            maximum: TOOL_CONSTANTS.MAX_THREAD_SIZE,
+                            default: TOOL_CONSTANTS.DEFAULT_THREAD_SIZE,
+                        },
+                        cursor: {
+                            type: 'string',
+                            description: 'Pagination cursor for next page',
+                        },
+                        excludeDrafts: {
+                            type: 'boolean',
+                            default: true,
+                            description: 'Exclude AI-generated drafts (source.type "support-agent-ai") and unsent drafts (state "draft") from results. Default: true. Set false to include all threads.',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+            {
+                name: 'getAttachment',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.getAttachment,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        attachmentId: {
+                            type: 'string',
+                            description: 'The attachment ID (from getThreads attachment metadata)',
+                        },
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID the attachment belongs to',
+                        },
+                        filename: {
+                            type: 'string',
+                            description: 'Original filename (from getThreads attachment metadata). Used for the saved file.',
+                        },
+                    },
+                    required: ['attachmentId', 'conversationId'],
+                },
+            },
+            {
+                name: 'getServerTime',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.getServerTime,
+                inputSchema: {
+                    type: 'object',
+                    properties: {},
+                },
+            },
+            {
+                name: 'structuredConversationFilter',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.structuredConversationFilter,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        assignedTo: { type: 'number', description: 'User ID from previous_results[].assignee.id. Use -1 for unassigned.' },
+                        folderId: { type: 'number', description: 'Folder ID from Help Scout UI (not in API responses)' },
+                        customerIds: { type: 'array', items: { type: 'number' }, description: 'Customer IDs from previous_results[].customer.id' },
+                        conversationNumber: { type: 'number', description: 'Ticket number from previous_results[].number or user reference' },
+                        status: { type: 'string', enum: ['active', 'pending', 'closed', 'spam', 'all'], default: 'all' },
+                        inboxId: { type: 'string', description: 'Inbox ID to combine with filters' },
+                        tag: { type: 'string', description: 'Tag name to combine with filters' },
+                        createdAfter: { type: 'string', format: 'date-time' },
+                        createdBefore: { type: 'string', format: 'date-time' },
+                        modifiedSince: { type: 'string', format: 'date-time', description: 'Filter by last modified (different from created)' },
+                        sortBy: { type: 'string', enum: ['createdAt', 'modifiedAt', 'number', 'waitingSince', 'customerName', 'customerEmail', 'mailboxId', 'status', 'subject'], default: 'createdAt', description: 'waitingSince/customerName/customerEmail are unique to this tool' },
+                        sortOrder: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+                        limit: { type: 'number', minimum: 1, default: 50 },
+                        cursor: { type: 'string' },
+                    },
+                },
+            },
+            {
+                name: 'createReply',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.createReply,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to reply to',
+                        },
+                        text: {
+                            type: 'string',
+                            description: 'Reply body (HTML). Auto-formatted: <p> → <br><br>, <pre> → <div>, inline <code> gets class="inline-code".',
+                        },
+                        customer: {
+                            description: 'Customer receiving the reply. Provide either { id } or { email, firstName?, lastName? }.',
+                            oneOf: [
+                                {
+                                    type: 'object',
+                                    properties: { id: { type: 'number' } },
+                                    required: ['id'],
+                                },
+                                {
+                                    type: 'object',
+                                    properties: {
+                                        email: { type: 'string', format: 'email' },
+                                        firstName: { type: 'string' },
+                                        lastName: { type: 'string' },
+                                    },
+                                    required: ['email'],
+                                },
+                            ],
+                        },
+                        draft: {
+                            type: 'boolean',
+                            description: 'Create as draft (default: true). Set false to send (requires HELPSCOUT_ALLOW_SEND_REPLY=true).',
+                            default: true,
+                        },
+                        user: { type: 'number', description: 'User ID of the replying agent' },
+                        assignTo: { type: 'number', description: 'User ID to assign the conversation to' },
+                        status: {
+                            type: 'string',
+                            enum: ['active', 'closed', 'open', 'pending', 'spam'],
+                            description: 'Set conversation status after reply',
+                        },
+                        cc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'CC email addresses' },
+                        bcc: { type: 'array', items: { type: 'string', format: 'email' }, description: 'BCC email addresses' },
+                    },
+                    required: ['conversationId', 'text', 'customer'],
+                },
+            },
+            {
+                name: 'createNote',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.createNote,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to add the note to',
+                        },
+                        text: {
+                            type: 'string',
+                            description: 'Note body (HTML). Auto-formatted for Help Scout.',
+                        },
+                        user: { type: 'number', description: 'User ID of the note author' },
+                        status: {
+                            type: 'string',
+                            enum: ['active', 'closed', 'open', 'pending', 'spam'],
+                            description: 'Set conversation status after adding the note',
+                        },
+                    },
+                    required: ['conversationId', 'text'],
+                },
+            },
+            {
+                name: 'getConversation',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.getConversation,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to retrieve',
+                        },
+                        embed: {
+                            type: 'array',
+                            items: { type: 'string', enum: ['threads'] },
+                            description: 'Embed threads in the response',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+            {
+                name: 'createConversation',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.createConversation,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        subject: { type: 'string', description: 'Conversation subject line' },
+                        type: {
+                            type: 'string',
+                            enum: ['email', 'phone', 'chat'],
+                            description: 'Type of conversation',
+                        },
+                        mailboxId: { type: 'number', description: 'Mailbox ID' },
+                        customer: {
+                            description: 'Customer for the conversation. Provide either { id } or { email, firstName?, lastName? }.',
+                            oneOf: [
+                                {
+                                    type: 'object',
+                                    properties: { id: { type: 'number' } },
+                                    required: ['id'],
+                                },
+                                {
+                                    type: 'object',
+                                    properties: {
+                                        email: { type: 'string', format: 'email' },
+                                        firstName: { type: 'string' },
+                                        lastName: { type: 'string' },
+                                    },
+                                    required: ['email'],
+                                },
+                            ],
+                        },
+                        threads: {
+                            type: 'array',
+                            minItems: 1,
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    type: {
+                                        type: 'string',
+                                        enum: ['customer', 'note', 'message'],
+                                        description: 'Thread type: customer (from customer), message (from agent), note (internal)',
+                                    },
+                                    text: { type: 'string', description: 'Thread body (HTML). Auto-formatted for Help Scout.' },
+                                    customer: {
+                                        description: 'Thread author (optional, defaults to conversation customer)',
+                                        oneOf: [
+                                            { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] },
+                                            { type: 'object', properties: { email: { type: 'string' } }, required: ['email'] },
+                                        ],
+                                    },
+                                    draft: { type: 'boolean', description: 'Whether the thread is a draft' },
+                                },
+                                required: ['type', 'text'],
+                            },
+                            description: 'Initial thread(s). At least one is required.',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['active', 'pending', 'closed'],
+                            description: 'Conversation status (default: active)',
+                            default: 'active',
+                        },
+                        assignTo: { type: 'number', description: 'User ID to assign conversation to' },
+                        tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the conversation' },
+                        imported: { type: 'boolean', description: 'Mark as imported (skips notifications)' },
+                        autoReply: { type: 'boolean', description: 'Send auto-reply to customer' },
+                        user: { type: 'number', description: 'User ID creating the conversation' },
+                        createdAt: { type: 'string', description: 'ISO 8601 timestamp (for imported conversations)' },
+                    },
+                    required: ['subject', 'type', 'mailboxId', 'customer', 'threads'],
+                },
+            },
+            {
+                name: 'updateConversation',
+                description: CONVERSATION_TOOL_DESCRIPTIONS.updateConversation,
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        conversationId: {
+                            type: 'string',
+                            description: 'The conversation ID to update',
+                        },
+                        subject: { type: 'string', description: 'New subject line' },
+                        status: {
+                            type: 'string',
+                            enum: ['active', 'pending', 'closed', 'spam'],
+                            description: 'New conversation status',
+                        },
+                        assignTo: {
+                            type: ['number', 'null'],
+                            description: 'User ID to assign to, or null to unassign',
+                        },
+                        tags: { type: 'array', items: { type: 'string' }, description: 'Replace all tags with this list' },
+                        customFields: {
+                            type: 'array',
+                            items: {
+                                type: 'object',
+                                properties: {
+                                    id: { type: 'number', description: 'Custom field ID' },
+                                    value: { type: 'string', description: 'New value' },
+                                },
+                                required: ['id', 'value'],
+                            },
+                            description: 'Custom field values to update',
+                        },
+                    },
+                    required: ['conversationId'],
+                },
+            },
+        ];
+        // Get Docs tools from the Docs handler (unless disabled via HELPSCOUT_DISABLE_DOCS=true)
+        const docsTools = config.helpscout.disableDocs ? [] : await this.docsToolHandler.listDocsTools();
+        // Get Reports tools from the Reports handler
+        const reportsTools = await this.reportsToolHandler.listReportsTools();
+        const compactedConversationTools = conversationTools.map(tool => compactTool(tool, CONVERSATION_TOOL_DESCRIPTIONS[tool.name]));
+        // Docs and reports tools are already compacted by their own handlers
+        return [...compactedConversationTools, ...docsTools, ...reportsTools];
+    }
+    async callTool(request) {
+        const requestId = Math.random().toString(36).substring(7);
+        const startTime = Date.now();
+        logger.info('Tool call started', {
+            requestId,
+            toolName: request.params.name,
+            arguments: request.params.arguments,
+        });
+        // REVERSE LOGIC VALIDATION: Check API constraints before making the call
+        const validationContext = {
+            toolName: request.params.name,
+            arguments: request.params.arguments || {},
+            userQuery: this.currentUserQuery,
+            previousCalls: [...this.callHistory]
+        };
+        const validation = HelpScoutAPIConstraints.validateToolCall(validationContext);
+        if (!validation.isValid) {
+            const errorDetails = {
+                errors: validation.errors,
+                suggestions: validation.suggestions,
+                requiredPrerequisites: validation.requiredPrerequisites
+            };
+            logger.warn('Tool call validation failed', {
+                requestId,
+                toolName: request.params.name,
+                validation: errorDetails
+            });
+            // Return helpful error with API constraint guidance
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'API Constraint Validation Failed',
+                            details: errorDetails,
+                            helpScoutAPIRequirements: {
+                                message: 'This call violates Help Scout API constraints',
+                                requiredActions: validation.requiredPrerequisites || [],
+                                suggestions: validation.suggestions
+                            }
+                        })
+                    }]
+            };
+        }
+        try {
+            let result;
+            // Check if this is a Docs tool (unless disabled)
+            const isDocsTool = !config.helpscout.disableDocs &&
+                ((await this.docsToolHandler.listDocsTools()).some(tool => tool.name === request.params.name) ||
+                    LEGACY_DOCS_TOOL_NAMES.has(request.params.name));
+            // Check if this is a Reports tool
+            const reportsTools = await this.reportsToolHandler.listReportsTools();
+            const isReportsTool = reportsTools.some(tool => tool.name === request.params.name) ||
+                LEGACY_REPORT_TOOL_NAMES.has(request.params.name);
+            if (isDocsTool) {
+                // Delegate to Docs tool handler
+                result = await this.docsToolHandler.callDocsTool(request);
+            }
+            else if (isReportsTool) {
+                // Delegate to Reports tool handler
+                result = await this.reportsToolHandler.callReportsTool(request);
+            }
+            else {
+                // Handle conversation tools
+                switch (request.params.name) {
+                    case 'searchInboxes':
+                        result = await this.searchInboxes(request.params.arguments || {});
+                        break;
+                    case 'searchConversations':
+                        result = await this.searchConversations(request.params.arguments || {});
+                        break;
+                    case 'getConversationSummary':
+                        result = await this.getConversationSummary(request.params.arguments || {});
+                        break;
+                    case 'getThreads':
+                        result = await this.getThreads(request.params.arguments || {});
+                        break;
+                    case 'getAttachment':
+                        result = await this.getAttachment(request.params.arguments || {});
+                        break;
+                    case 'getServerTime':
+                        result = await this.getServerTime();
+                        break;
+                    case 'listAllInboxes':
+                        result = await this.searchInboxes(request.params.arguments || {});
+                        break;
+                    case 'structuredConversationFilter':
+                        result = await this.structuredConversationFilter(request.params.arguments || {});
+                        break;
+                    case 'createReply':
+                        result = await this.createReply(request.params.arguments || {});
+                        break;
+                    case 'createNote':
+                        result = await this.createNote(request.params.arguments || {});
+                        break;
+                    case 'getConversation':
+                        result = await this.getConversation(request.params.arguments || {});
+                        break;
+                    case 'createConversation':
+                        result = await this.createConversation(request.params.arguments || {});
+                        break;
+                    case 'updateConversation':
+                        result = await this.updateConversation(request.params.arguments || {});
+                        break;
+                    default:
+                        throw new Error(`Unknown tool: ${request.params.name}`);
+                }
+            }
+            const duration = Date.now() - startTime;
+            // Add to call history for future validation
+            this.callHistory.push(request.params.name);
+            logger.info('Tool call completed', {
+                requestId,
+                toolName: request.params.name,
+                duration,
+                validationPassed: true,
+            });
+            return result;
+        }
+        catch (error) {
+            const duration = Date.now() - startTime;
+            return createMcpToolError(error, {
+                toolName: request.params.name,
+                requestId,
+                duration,
+            });
+        }
+    }
+    async searchInboxes(args) {
+        const input = SearchInboxesInputSchema.parse(args);
+        const response = await helpScoutClient.get('/mailboxes', {
+            page: 1,
+            size: input.limit,
+        });
+        const inboxes = response._embedded?.mailboxes || [];
+        const query = input.query.trim().toLowerCase();
+        const filteredInboxes = query
+            ? inboxes.filter(inbox => inbox.name.toLowerCase().includes(query))
+            : inboxes;
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: isVerbose(args) ? filteredInboxes : filteredInboxes.map(inbox => ({
+                            id: inbox.id,
+                            name: inbox.name,
+                            email: inbox.email,
+                        })),
+                        totalFound: filteredInboxes.length,
+                    }),
+                }],
+        };
+    }
+    async searchConversations(args) {
+        const input = SearchConversationsInputSchema.parse(args);
+        const verbose = isVerbose(args);
+        // When transcripts are requested and no explicit limit was set, default to 10
+        if (input.includeTranscripts && !args?.limit) {
+            input.limit = 10;
+        }
+        // --- Route to the appropriate search strategy ---
+        let result;
+        // 1. Keyword search mode: searchTerms provided → multi-status parallel search
+        if (input.searchTerms && input.searchTerms.length > 0) {
+            result = await this.searchConversationsKeyword(input, verbose);
+        }
+        // 2. Structured search mode: contentTerms/subjectTerms/customerEmail/emailDomain/tags
+        else if (input.contentTerms?.length || input.subjectTerms?.length || input.customerEmail || input.emailDomain || input.tags?.length) {
+            result = await this.searchConversationsStructured(input, verbose);
+        }
+        // 3. Simple/list mode: filter by status, date, inbox, tag
+        else {
+            result = await this.searchConversationsList(input, verbose);
+        }
+        // --- Attach transcripts if requested ---
+        if (input.includeTranscripts) {
+            result = await this.enrichWithTranscripts(result, input.transcriptMaxMessages);
+        }
+        return result;
+    }
+    /**
+     * Keyword search: multi-status parallel search across active/pending/closed
+     */
+    async searchConversationsKeyword(input, verbose) {
+        const createdAfter = input.createdAfter || this.calculateTimeRange(input.timeframeDays);
+        const searchQuery = this.buildSearchQuery(input.searchTerms, input.searchIn);
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        const statuses = input.statuses?.length ? input.statuses : ['active', 'pending', 'closed'];
+        const limitPerStatus = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
+        const allResults = [];
+        const settled = await Promise.allSettled(statuses.map(status => this.searchSingleStatus({
+            status,
+            searchQuery,
+            createdAfter,
+            limitPerStatus,
+            inboxId: effectiveInboxId,
+            createdBefore: input.createdBefore,
+            verbose,
+        })));
+        for (const [index, result] of settled.entries()) {
+            const status = statuses[index];
+            if (result.status === 'fulfilled') {
+                allResults.push(result.value);
+            }
+            else {
+                const error = result.reason;
+                if (!isApiError(error))
+                    throw error;
+                if (error.code === 'UNAUTHORIZED' || error.code === 'INVALID_INPUT')
+                    throw error;
+                logger.error('Status search failed - partial results will be returned', {
+                    status, errorCode: error.code, message: error.message,
+                });
+                allResults.push({ status, totalCount: 0, conversations: [] });
+            }
+        }
+        const totalConversations = allResults.reduce((sum, r) => sum + r.conversations.length, 0);
+        const totalAvailable = allResults.reduce((sum, r) => sum + r.totalCount, 0);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        query: searchQuery,
+                        totalConversationsFound: totalConversations,
+                        totalAvailable,
+                        resultsByStatus: allResults.map(r => ({
+                            status: r.status,
+                            count: r.conversations.length,
+                            totalAvailable: r.totalCount,
+                            conversations: r.conversations,
+                        })),
+                    }),
+                }],
+        };
+    }
+    /**
+     * Structured search: builds Help Scout query syntax with field prefixes
+     */
+    async searchConversationsStructured(input, verbose) {
+        const queryParts = [];
+        if (input.contentTerms && input.contentTerms.length > 0) {
+            const bodyQueries = input.contentTerms.map(term => `body:"${this.escapeQueryTerm(term)}"`);
+            queryParts.push(`(${bodyQueries.join(' OR ')})`);
+        }
+        if (input.subjectTerms && input.subjectTerms.length > 0) {
+            const subjectQueries = input.subjectTerms.map(term => `subject:"${this.escapeQueryTerm(term)}"`);
+            queryParts.push(`(${subjectQueries.join(' OR ')})`);
+        }
+        if (input.customerEmail) {
+            queryParts.push(`email:"${this.escapeQueryTerm(input.customerEmail)}"`);
+        }
+        if (input.emailDomain) {
+            const domain = input.emailDomain.replace('@', '');
+            queryParts.push(`email:"${this.escapeQueryTerm(domain)}"`);
+        }
+        if (input.tags && input.tags.length > 0) {
+            const tagQueries = input.tags.map(tag => `tag:"${this.escapeQueryTerm(tag)}"`);
+            queryParts.push(`(${tagQueries.join(' OR ')})`);
+        }
+        const queryString = queryParts.length > 0 ? queryParts.join(' AND ') : undefined;
+        const effectiveLimit = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
+        const queryParams = {
+            size: effectiveLimit,
+            sortField: 'createdAt',
+            sortOrder: 'desc',
+        };
+        if (queryString)
+            queryParams.query = queryString;
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId)
+            queryParams.mailbox = effectiveInboxId;
+        const queryWithDate = this.appendCreatedAtFilter(queryParams.query, input.createdAfter);
+        if (queryWithDate)
+            queryParams.query = queryWithDate;
+        // Multi-status parallel search if statuses array provided
+        const statuses = input.statuses && input.statuses.length > 0
+            ? input.statuses
+            : null;
+        let conversations = [];
+        let clientSideFiltered = false;
+        if (statuses) {
+            const results = await Promise.allSettled(statuses.map(status => this.fetchConversationPages({ ...queryParams, status }, effectiveLimit)));
+            const seenIds = new Set();
+            for (const result of results) {
+                if (result.status === 'fulfilled') {
+                    for (const conv of result.value.conversations) {
+                        if (!seenIds.has(conv.id)) {
+                            seenIds.add(conv.id);
+                            conversations.push(conv);
+                        }
+                    }
+                }
+            }
+            conversations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        }
+        else {
+            queryParams.status = input.status || 'all';
+            const { conversations: fetched } = await this.fetchConversationPages(queryParams, effectiveLimit);
+            conversations = fetched;
+        }
+        if (input.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'searchConversations(structured)');
+            conversations = result.filtered;
+            clientSideFiltered = result.wasFiltered;
+        }
+        if (conversations.length > effectiveLimit) {
+            conversations = conversations.slice(0, effectiveLimit);
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: verbose ? conversations : conversations.map(c => this.slimConversation(c)),
+                        query: queryString,
+                        pagination: { returned: conversations.length },
+                        ...(statuses ? { statuses } : {}),
+                        ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+                    }),
+                }],
+        };
+    }
+    /**
+     * Simple/list search: filter by status, date, inbox, tag
+     */
+    async searchConversationsList(input, verbose) {
+        const baseParams = {
+            page: 1,
+            size: input.limit,
+            sortField: input.sort,
+            sortOrder: input.order,
+        };
+        if (input.query)
+            baseParams.query = input.query;
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId)
+            baseParams.mailbox = effectiveInboxId;
+        if (input.tag)
+            baseParams.tag = input.tag;
+        const queryWithDate = this.appendCreatedAtFilter(baseParams.query, input.createdAfter);
+        if (queryWithDate)
+            baseParams.query = queryWithDate;
+        let conversations = [];
+        let searchedStatuses;
+        let pagination = null;
+        const effectiveLimit = input.limit || TOOL_CONSTANTS.DEFAULT_PAGE_SIZE;
+        if (input.status && !input.statuses) {
+            // Single status — auto-paginate
+            const { conversations: fetched, totalElements } = await this.fetchConversationPages({ ...baseParams, status: input.status }, effectiveLimit);
+            conversations = fetched.slice(0, effectiveLimit);
+            searchedStatuses = [input.status];
+            pagination = { returned: conversations.length, totalAvailable: totalElements };
+        }
+        else {
+            // Multi-status — auto-paginate each status in parallel
+            const statuses = input.statuses?.length ? input.statuses : ['active', 'pending', 'closed'];
+            searchedStatuses = [...statuses];
+            const results = await Promise.allSettled(statuses.map(status => this.fetchConversationPages({ ...baseParams, status }, effectiveLimit)));
+            const seenIds = new Set();
+            const failedStatuses = [];
+            let totalAvailable = 0;
+            for (const [index, result] of results.entries()) {
+                if (result.status === 'fulfilled') {
+                    totalAvailable += result.value.totalElements;
+                    for (const conv of result.value.conversations) {
+                        if (!seenIds.has(conv.id)) {
+                            seenIds.add(conv.id);
+                            conversations.push(conv);
+                        }
+                    }
+                }
+                else {
+                    const failedStatus = statuses[index];
+                    const reason = result.reason;
+                    const errorMessage = isApiError(reason)
+                        ? reason.message
+                        : (reason instanceof Error ? reason.message : String(reason));
+                    const errorCode = isApiError(reason) ? reason.code : 'UNKNOWN';
+                    if (!isApiError(reason))
+                        throw reason;
+                    if (errorCode === 'UNAUTHORIZED' || errorCode === 'INVALID_INPUT')
+                        throw reason;
+                    failedStatuses.push({ status: failedStatus, message: errorMessage, code: errorCode });
+                    logger.error('Status search failed - partial results will be returned', {
+                        status: failedStatus, errorCode, message: errorMessage,
+                    });
+                }
+            }
+            if (failedStatuses.length > 0) {
+                searchedStatuses = statuses.filter(s => !failedStatuses.some(f => f.status === s));
+            }
+            conversations.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            if (conversations.length > effectiveLimit) {
+                conversations = conversations.slice(0, effectiveLimit);
+            }
+            pagination = {
+                returned: conversations.length,
+                totalAvailable,
+                ...(failedStatuses.length > 0 ? { errors: failedStatuses } : {}),
+            };
+        }
+        // Apply client-side createdBefore filtering
+        let clientSideFiltered = false;
+        const originalPagination = pagination;
+        if (input.createdBefore) {
+            const filterResult = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'searchConversations');
+            conversations = filterResult.filtered;
+            clientSideFiltered = filterResult.wasFiltered;
+            if (clientSideFiltered) {
+                if (input.status) {
+                    pagination = this.buildFilteredPagination(conversations.length, originalPagination, true);
+                }
+                else {
+                    const merged = originalPagination;
+                    pagination = {
+                        totalResults: conversations.length,
+                        totalAvailable: merged?.totalAvailable,
+                        errors: merged?.errors,
+                        note: `Client-side createdBefore filter applied to merged results. ${merged?.note || ''}`
+                    };
+                }
+            }
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: verbose ? conversations : conversations.map(c => this.slimConversation(c)),
+                        pagination,
+                        ...(input.query ? { query: input.query } : {}),
+                        statuses: searchedStatuses,
+                        ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+                    }),
+                }],
+        };
+    }
+    /**
+     * Post-process a searchConversations result to attach transcripts.
+     * Works with all three search paths (keyword, structured, list).
+     */
+    async enrichWithTranscripts(result, maxMessages) {
+        const data = JSON.parse(result.content[0].text);
+        // Keyword path uses resultsByStatus[].conversations, others use results[]
+        if (data.resultsByStatus) {
+            for (const statusGroup of data.resultsByStatus) {
+                statusGroup.conversations = await this.attachTranscripts(statusGroup.conversations, maxMessages);
+            }
+        }
+        else if (data.results) {
+            data.results = await this.attachTranscripts(data.results, maxMessages);
+        }
+        data.includeTranscripts = true;
+        data.transcriptMaxMessages = maxMessages;
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify(data),
+                }],
+        };
+    }
+    async getConversationSummary(args) {
+        const input = GetConversationSummaryInputSchema.parse(args);
+        const verbose = isVerbose(args);
+        // Get conversation details
+        const conversation = await helpScoutClient.get(`/conversations/${input.conversationId}`);
+        // Get all threads to find first customer message and latest staff reply
+        const { threads } = await this.fetchThreadPages(input.conversationId, 200);
+        // Verbose: return full conversation + all threads
+        if (verbose) {
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({ conversation, threads }),
+                    }],
+            };
+        }
+        const customerThreads = threads.filter(t => t.type === 'customer');
+        const staffThreads = threads.filter(t => t.type === 'message' && t.createdBy);
+        const firstCustomerMessage = customerThreads.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0];
+        const latestStaffReply = staffThreads.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+        const summary = {
+            conversation: this.slimConversation(conversation),
+            firstCustomerMessage: firstCustomerMessage ? {
+                id: firstCustomerMessage.id,
+                body: config.security.allowPii ? firstCustomerMessage.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+                createdAt: firstCustomerMessage.createdAt,
+                customer: firstCustomerMessage.customer,
+            } : null,
+            latestStaffReply: latestStaffReply ? {
+                id: latestStaffReply.id,
+                body: config.security.allowPii ? latestStaffReply.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+                createdAt: latestStaffReply.createdAt,
+                createdBy: latestStaffReply.createdBy,
+            } : null,
+        };
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify(summary),
+                }],
+        };
+    }
+    /**
+     * Extract clean message from Help Scout Beacon form HTML.
+     * Beacon forms come in two variants:
+     * 1. Hidden span + form table: actual message in <span style="display: none">
+     * 2. Form table only: Q&A pairs, last long answer is the message body
+     * Both may have a "View Full Ticket" source link to preserve.
+     */
+    cleanBeaconForm(html) {
+        // Detect Beacon form pattern: table with bgcolor="#EAEAEA"
+        const isBeaconForm = /bgcolor="#EAEAEA"/.test(html);
+        if (!isBeaconForm)
+            return html;
+        // Extract source URL from "View Full Ticket" link (present in both variants)
+        const linkMatch = html.match(/<a\s+href="([^"]+)"[^>]*>View Full Ticket<\/a>/i);
+        const sourceUrl = linkMatch
+            ? linkMatch[1].replace(/&amp;/gi, '&')
+            : '';
+        // Variant 1: Hidden span contains the actual message
+        const hiddenMatch = html.match(/<span style="display: none">([\s\S]*?)<\/span>/i);
+        if (hiddenMatch && hiddenMatch[1].trim()) {
+            let cleaned = hiddenMatch[1];
+            if (sourceUrl) {
+                cleaned += `<br>\n<br>\nSource: ${sourceUrl}`;
+            }
+            return cleaned;
+        }
+        // Variant 2: Form table only — extract Q&A pairs, use last long answer as message
+        // Parse answer cells: they follow question cells in alternating bg-colored rows
+        const answerRegex = /<tr\s+bgcolor="#FFFFFF"[^>]*>[\s\S]*?<td[\s\S]*?<font[^>]*>([\s\S]*?)<\/font>[\s\S]*?<\/tr>/gi;
+        const answers = [];
+        let match;
+        while ((match = answerRegex.exec(html)) !== null) {
+            const text = match[1].trim();
+            if (text && text !== '&nbsp;') {
+                answers.push(text);
+            }
+        }
+        // The last answer is typically the detailed message ("Further describe...")
+        // Use it as the message body if it's substantially longer than other answers
+        let message = '';
+        if (answers.length > 0) {
+            const lastAnswer = answers[answers.length - 1];
+            message = lastAnswer;
+        }
+        if (sourceUrl) {
+            message += `<br>\n<br>\nSource: ${sourceUrl}`;
+        }
+        return message || html;
+    }
+    /**
+     * Convert HTML to Markdown for transcript output.
+     */
+    htmlToMarkdown(html) {
+        return ToolHandler.turndown.turndown(html);
+    }
+    /**
+     * Build a transcript from threads: filter to customer/staff messages,
+     * strip HTML, respect redaction, sort chronologically.
+     */
+    buildTranscript(threads, maxMessages) {
+        const dialogueThreads = threads.filter(t => {
+            const type = t.type;
+            const state = t.state;
+            const sourceType = t.source?.type;
+            if (type !== 'customer' && type !== 'message')
+                return false;
+            if (state === 'draft')
+                return false;
+            if (sourceType === 'support-agent-ai')
+                return false;
+            return true;
+        });
+        dialogueThreads.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        const limited = dialogueThreads.slice(0, maxMessages);
+        return limited.map(t => {
+            const type = t.type;
+            const isCustomer = type === 'customer';
+            const person = isCustomer ? t.customer : t.createdBy;
+            const name = person
+                ? `${person.first || person.firstName || ''} ${person.last || person.lastName || ''}`.trim()
+                : (isCustomer ? 'Customer' : 'Staff');
+            const role = isCustomer ? 'customer' : 'staff';
+            const rawBody = t.body || '';
+            const body = config.security.allowPii
+                ? this.htmlToMarkdown(this.cleanBeaconForm(rawBody))
+                : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]';
+            // Render attachments as inline markdown
+            const rawAttachments = t._embedded?.attachments || t.attachments || [];
+            let fullBody = body;
+            if (rawAttachments.length > 0) {
+                const attachmentLines = rawAttachments.map((a) => {
+                    const filename = a.filename || a.fileName || 'attachment';
+                    const isImage = (a.mimeType || '').startsWith('image/');
+                    const dims = isImage && a.width && a.height ? ` (${a.width}x${a.height})` : '';
+                    return isImage
+                        ? `![${filename}${dims}](attachment:${a.id})`
+                        : `[${filename}](attachment:${a.id})`;
+                });
+                fullBody += '\n\n' + attachmentLines.join('\n');
+            }
+            return {
+                role,
+                from: name,
+                date: t.createdAt,
+                body: fullBody,
+            };
+        });
+    }
+    /**
+     * For an array of conversations, fetch threads and build transcripts in parallel.
+     */
+    async attachTranscripts(conversations, maxMessages) {
+        const results = await Promise.allSettled(conversations.map(async (conv) => {
+            const id = String(conv.id);
+            const { threads } = await this.fetchThreadPages(id, maxMessages);
+            const transcript = this.buildTranscript(threads, maxMessages);
+            return { ...conv, transcript };
+        }));
+        return results.map((result, i) => {
+            if (result.status === 'fulfilled')
+                return result.value;
+            logger.error('Failed to fetch transcript', {
+                conversationId: conversations[i].id,
+                error: result.reason?.message || String(result.reason),
+            });
+            return { ...conversations[i], transcript: null, transcriptError: 'Failed to fetch' };
+        });
+    }
+    async getThreads(args) {
+        const input = GetThreadsInputSchema.parse(args);
+        const verbose = isVerbose(args);
+        // Auto-paginate: Help Scout may ignore size param for threads
+        const { threads: allThreads, totalElements } = await this.fetchThreadPages(input.conversationId, input.limit);
+        let threads = allThreads.slice(0, input.limit);
+        // Filter AI drafts and unsent drafts (default: on, set excludeDrafts:false to include)
+        const draftsExcluded = input.excludeDrafts !== false;
+        if (draftsExcluded) {
+            threads = threads.filter(t => {
+                const state = t.state;
+                const sourceType = t.source?.type;
+                if (state === 'draft')
+                    return false;
+                if (sourceType === 'support-agent-ai')
+                    return false;
+                return true;
+            });
+        }
+        // Transcript format: minimal customer/staff dialogue for AI analysis
+        if (input.format === 'transcript') {
+            const transcript = this.buildTranscript(threads, threads.length);
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            conversationId: input.conversationId,
+                            format: 'transcript',
+                            messages: transcript,
+                            totalMessages: transcript.length,
+                            totalThreads: totalElements,
+                            ...(draftsExcluded ? { draftsExcluded: true } : {}),
+                        }),
+                    }],
+            };
+        }
+        // Verbose: return raw thread objects (still redact if needed)
+        if (verbose) {
+            const redactedThreads = config.security.allowPii ? threads : threads.map(t => ({
+                ...t,
+                body: '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+            }));
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            conversationId: input.conversationId,
+                            threads: redactedThreads,
+                            pagination: { returned: threads.length, total: totalElements },
+                            ...(draftsExcluded ? { draftsExcluded: true } : {}),
+                        }),
+                    }],
+            };
+        }
+        // Slim and redact threads
+        const processedThreads = threads.map(thread => ({
+            id: thread.id,
+            type: thread.type,
+            status: thread.status,
+            body: config.security.allowPii ? thread.body : '[Content hidden - set REDACT_MESSAGE_CONTENT=false to view]',
+            createdBy: thread.createdBy ? {
+                id: thread.createdBy.id,
+                type: thread.createdBy.type,
+                first: thread.createdBy.first || thread.createdBy.firstName,
+                last: thread.createdBy.last || thread.createdBy.lastName,
+                email: thread.createdBy.email,
+            } : null,
+            customer: thread.customer ? {
+                id: thread.customer.id,
+                first: thread.customer.first || thread.customer.firstName,
+                last: thread.customer.last || thread.customer.lastName,
+                email: thread.customer.email,
+            } : null,
+            createdAt: thread.createdAt,
+            ...(thread.state ? { state: thread.state } : {}),
+            ...(thread.source?.type ? { source: { type: thread.source.type } } : {}),
+            ...(((thread._embedded?.attachments || thread.attachments)?.length > 0) ? {
+                attachments: (thread._embedded?.attachments || thread.attachments).map((a) => ({
+                    id: a.id,
+                    filename: a.filename || a.fileName,
+                    mimeType: a.mimeType,
+                    size: a.size,
+                    width: a.width,
+                    height: a.height,
+                }))
+            } : {}),
+        }));
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        conversationId: input.conversationId,
+                        threads: processedThreads,
+                        pagination: { returned: threads.length, total: totalElements },
+                        ...(draftsExcluded ? { draftsExcluded: true } : {}),
+                    }),
+                }],
+        };
+    }
+    async getAttachment(args) {
+        const input = z.object({
+            attachmentId: z.string(),
+            conversationId: z.string(),
+            filename: z.string().optional(),
+        }).parse(args);
+        try {
+            // Fetch attachment data from Help Scout API
+            const response = await helpScoutClient.get(`/conversations/${input.conversationId}/attachments/${input.attachmentId}/data`, {});
+            if (!response.data) {
+                return {
+                    content: [{ type: 'text', text: JSON.stringify({ error: 'No attachment data returned from API' }) }],
+                    isError: true,
+                };
+            }
+            // Decode base64 data
+            const buffer = Buffer.from(response.data, 'base64');
+            const filename = input.filename || `attachment-${input.attachmentId}`;
+            // Detect mime type and prepare file path
+            const path = await import('path');
+            const ext = path.extname(filename).toLowerCase();
+            const mimeType = detectMimeType(buffer, ext);
+            // For images, return as native MCP image content so the AI can see them directly
+            if (isImageMime(mimeType)) {
+                return {
+                    content: [
+                        {
+                            type: 'image',
+                            data: response.data,
+                            mimeType,
+                        },
+                        {
+                            type: 'text',
+                            text: JSON.stringify({
+                                attachmentId: input.attachmentId,
+                                conversationId: input.conversationId,
+                                filename,
+                                size: buffer.length,
+                                mimeType,
+                            }),
+                        },
+                    ],
+                };
+            }
+            // For non-images, write to temp file with correct extension
+            const fs = await import('fs');
+            const dir = path.join('/tmp', 'helpscout-attachments', input.conversationId);
+            fs.mkdirSync(dir, { recursive: true });
+            const missingExt = !ext ? extForMime(mimeType) : '';
+            const filePath = path.join(dir, `${filename}${missingExt}`);
+            fs.writeFileSync(filePath, buffer);
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            attachmentId: input.attachmentId,
+                            conversationId: input.conversationId,
+                            filename,
+                            filePath,
+                            size: buffer.length,
+                            mimeType,
+                            hint: 'Use the Read tool on filePath to view this file. For PDFs, use Read with pages parameter. For ZIP files, use Bash: unzip -l to list contents.',
+                        }),
+                    }],
+            };
+        }
+        catch (error) {
+            const message = isApiError(error) ? `Help Scout API error: ${error.message}` : `Failed to download attachment: ${error.message}`;
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
+                isError: true,
+            };
+        }
+    }
+    async getServerTime() {
+        const now = new Date();
+        const serverTime = {
+            isoTime: now.toISOString(),
+            unixTime: Math.floor(now.getTime() / 1000),
+        };
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: JSON.stringify(serverTime),
+                },
+            ],
+        };
+    }
+    /**
+     * Calculate time range for search
+     * Note: Help Scout API requires ISO 8601 format WITHOUT milliseconds
+     */
+    calculateTimeRange(timeframeDays) {
+        const timeRange = new Date();
+        timeRange.setDate(timeRange.getDate() - timeframeDays);
+        // Strip milliseconds - Help Scout rejects dates with .xxx format
+        return timeRange.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    }
+    /**
+     * Build Help Scout search query from terms and search locations (with injection protection)
+     */
+    buildSearchQuery(terms, searchIn) {
+        const queries = [];
+        for (const term of terms) {
+            const termQueries = [];
+            const escapedTerm = this.escapeQueryTerm(term);
+            if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BODY) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
+                termQueries.push(`body:"${escapedTerm}"`);
+            }
+            if (searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.SUBJECT) || searchIn.includes(TOOL_CONSTANTS.SEARCH_LOCATIONS.BOTH)) {
+                termQueries.push(`subject:"${escapedTerm}"`);
+            }
+            if (termQueries.length > 0) {
+                queries.push(`(${termQueries.join(' OR ')})`);
+            }
+        }
+        return queries.join(' OR ');
+    }
+    async searchSingleStatus(params) {
+        const queryWithDate = this.appendCreatedAtFilter(params.searchQuery, params.createdAfter);
+        const queryParams = {
+            size: params.limitPerStatus,
+            sortField: TOOL_CONSTANTS.DEFAULT_SORT_FIELD,
+            sortOrder: TOOL_CONSTANTS.DEFAULT_SORT_ORDER,
+            query: queryWithDate || params.searchQuery,
+            status: params.status,
+        };
+        if (params.inboxId) {
+            queryParams.mailbox = params.inboxId;
+        }
+        // Auto-paginate: Help Scout returns ~25/page regardless of size param
+        const { conversations: fetched, totalElements: apiTotalElements } = await this.fetchConversationPages(queryParams, params.limitPerStatus);
+        let conversations = fetched;
+        let filteredByDate = false;
+        if (params.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, params.createdBefore, `searchSingleStatus(${params.status})`);
+            conversations = result.filtered;
+            filteredByDate = result.wasFiltered;
+        }
+        if (conversations.length > params.limitPerStatus) {
+            conversations = conversations.slice(0, params.limitPerStatus);
+        }
+        return {
+            status: params.status,
+            totalCount: filteredByDate ? conversations.length : apiTotalElements,
+            conversations: params.verbose ? conversations : conversations.map(c => this.slimConversation(c)),
+        };
+    }
+    async structuredConversationFilter(args) {
+        const input = StructuredConversationFilterInputSchema.parse(args);
+        const queryParams = {
+            page: 1,
+            size: input.limit,
+            sortField: input.sortBy,
+            sortOrder: input.sortOrder,
+        };
+        // Apply unique structural filters
+        if (input.assignedTo !== undefined)
+            queryParams.assigned_to = input.assignedTo;
+        if (input.folderId !== undefined)
+            queryParams.folder = input.folderId;
+        if (input.conversationNumber !== undefined)
+            queryParams.number = input.conversationNumber;
+        // Apply customerIds via query syntax if provided
+        if (input.customerIds && input.customerIds.length > 0) {
+            queryParams.query = `(${input.customerIds.map(id => `customerIds:${id}`).join(' OR ')})`;
+        }
+        // Apply combination filters
+        const effectiveInboxId = input.inboxId || config.helpscout.defaultInboxId;
+        if (effectiveInboxId)
+            queryParams.mailbox = effectiveInboxId;
+        queryParams.status = input.status || 'all';
+        if (input.tag)
+            queryParams.tag = input.tag;
+        if (input.modifiedSince)
+            queryParams.modifiedSince = input.modifiedSince;
+        const queryWithDate = this.appendCreatedAtFilter(queryParams.query, input.createdAfter);
+        if (queryWithDate)
+            queryParams.query = queryWithDate;
+        // Auto-paginate: Help Scout returns ~25/page regardless of size param
+        const { conversations: fetched, totalElements } = await this.fetchConversationPages(queryParams, input.limit);
+        let conversations = fetched;
+        let clientSideFiltered = false;
+        if (input.createdBefore) {
+            const result = this.applyCreatedBeforeFilter(conversations, input.createdBefore, 'structuredConversationFilter');
+            conversations = result.filtered;
+            clientSideFiltered = result.wasFiltered;
+        }
+        if (conversations.length > input.limit) {
+            conversations = conversations.slice(0, input.limit);
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        results: isVerbose(args) ? conversations : conversations.map(c => this.slimConversation(c)),
+                        pagination: { returned: conversations.length, total: totalElements },
+                        ...(clientSideFiltered ? { clientSideFiltering: true } : {}),
+                    }),
+                }],
+        };
+    }
+    /**
+     * Convert HTML to Help Scout's native format.
+     *
+     * Help Scout renders replies as text with `<br><br>` between paragraphs,
+     * not `<p>` tags. Block elements (ul, ol, blockquote) have built-in CSS
+     * margins, so breaks around them are tuned to avoid double-spacing.
+     *
+     * Relaxed (default): `<br>` after blocks, `<br><br>` before blockquotes.
+     * Compact: no extra breaks around blocks.
+     */
+    /**
+     * Get a single conversation by ID
+     */
+    async getConversation(args) {
+        const input = GetConversationInputSchema.parse(args);
+        const params = {};
+        if (input.embed && input.embed.length > 0) {
+            params.embed = input.embed.join(',');
+        }
+        const conversation = await helpScoutClient.get(`/conversations/${input.conversationId}`, params, { ttl: 0 } // Don't cache direct lookups — user wants fresh data
+        );
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify(isVerbose(args) ? conversation : this.slimConversation(conversation)),
+                }],
+        };
+    }
+    /**
+     * Create a new conversation
+     */
+    async createConversation(args) {
+        const input = CreateConversationInputSchema.parse(args);
+        const compact = config.helpscout.replySpacing === 'compact';
+        const requestBody = {
+            subject: input.subject,
+            type: input.type,
+            mailboxId: input.mailboxId,
+            customer: input.customer,
+            status: input.status,
+            threads: input.threads.map(thread => ({
+                ...thread,
+                text: this.formatReplyHtml(thread.text, compact),
+            })),
+        };
+        if (input.assignTo !== undefined)
+            requestBody.assignTo = input.assignTo;
+        if (input.tags !== undefined)
+            requestBody.tags = input.tags;
+        if (input.imported !== undefined)
+            requestBody.imported = input.imported;
+        if (input.autoReply !== undefined)
+            requestBody.autoReply = input.autoReply;
+        if (input.user !== undefined)
+            requestBody.user = input.user;
+        if (input.createdAt !== undefined)
+            requestBody.createdAt = input.createdAt;
+        const response = await helpScoutClient.postWithResponse('/conversations', requestBody);
+        const conversationId = response.headers['resource-id'] || null;
+        // Invalidate cached conversation lists
+        cache.clear('GET:/conversations');
+        // Fetch the created conversation to return full details
+        let conversation = null;
+        if (conversationId) {
+            try {
+                const fetched = await helpScoutClient.get(`/conversations/${conversationId}`, {}, { ttl: 0 });
+                conversation = isVerbose(args) ? fetched : this.slimConversation(fetched);
+            }
+            catch {
+                // Non-fatal: we still have the ID even if re-fetch fails
+                logger.warn('Could not fetch created conversation details', { conversationId });
+            }
+        }
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId,
+                        conversation,
+                        message: 'Conversation created successfully.',
+                    }),
+                }],
+        };
+    }
+    /**
+     * Update a conversation's subject, status, assignee, tags, or custom fields.
+     *
+     * Help Scout uses three separate endpoints:
+     * - PATCH /conversations/{id} with JSONPatch for subject, status, assignTo
+     * - PUT /conversations/{id}/tags for tags (replaces all)
+     * - PUT /conversations/{id}/fields for custom fields (replaces all)
+     */
+    async updateConversation(args) {
+        const input = UpdateConversationInputSchema.parse(args);
+        const updatedFields = [];
+        const convId = input.conversationId;
+        // 1. Build JSONPatch operations for conversation-level fields
+        const patchOps = [];
+        if (input.subject !== undefined) {
+            patchOps.push({ op: 'replace', path: '/subject', value: input.subject });
+            updatedFields.push('subject');
+        }
+        if (input.status !== undefined) {
+            patchOps.push({ op: 'replace', path: '/status', value: input.status });
+            updatedFields.push('status');
+        }
+        if (input.assignTo !== undefined) {
+            if (input.assignTo === null) {
+                patchOps.push({ op: 'remove', path: '/assignTo' });
+            }
+            else {
+                patchOps.push({ op: 'replace', path: '/assignTo', value: input.assignTo });
+            }
+            updatedFields.push('assignTo');
+        }
+        // Execute JSONPatch if there are any operations
+        if (patchOps.length > 0) {
+            await helpScoutClient.patch(`/conversations/${convId}`, patchOps);
+        }
+        // 2. Update tags via separate PUT endpoint
+        if (input.tags !== undefined) {
+            await helpScoutClient.put(`/conversations/${convId}/tags`, { tags: input.tags });
+            updatedFields.push('tags');
+        }
+        // 3. Update custom fields via separate PUT endpoint
+        if (input.customFields !== undefined) {
+            await helpScoutClient.put(`/conversations/${convId}/fields`, { fields: input.customFields });
+            updatedFields.push('customFields');
+        }
+        // Invalidate cached conversation data
+        cache.clear('GET:/conversations');
+        // Fetch updated conversation to return current state
+        const fetched = await helpScoutClient.get(`/conversations/${convId}`, {}, { ttl: 0 });
+        const conversation = isVerbose(args) ? fetched : this.slimConversation(fetched);
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: convId,
+                        conversation,
+                        updated: updatedFields,
+                        message: `Conversation updated: ${updatedFields.join(', ')}.`,
+                    }),
+                }],
+        };
+    }
+    formatReplyHtml(html, compact) {
+        let result = html;
+        // Convert <pre> to <div> (Help Scout strips <pre> tags)
+        result = result.replace(/<pre[^>]*>(?:\s*<code[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>/gi, (_match, content) => `<div>${content.replace(/\n/g, '<br>')}</div>`);
+        // Add inline-code class to bare <code> tags (not inside <div> code blocks, already converted)
+        result = result.replace(/<code(?![^>]*\bclass\b)([^>]*)>/gi, '<code class="inline-code"$1>');
+        // Convert plain newlines to <br> (LLMs typically output \n, not HTML tags).
+        // Strip \n immediately after block-level closing tags (just formatting whitespace),
+        // then convert remaining \n to <br>. Double \n becomes a paragraph break.
+        result = result.replace(/(<\/(?:p|div|ul|ol|li|blockquote|h[1-6]|tr|table)>)\n/gi, '$1');
+        result = result.replace(/\n\n/g, '<br><br>');
+        result = result.replace(/\n/g, '<br>');
+        // Convert paragraphs to line breaks
+        result = result.replace(/<p[^>]*>/gi, '');
+        result = result.replace(/<\/p>/gi, '<br><br>');
+        // Normalize spacing around block elements
+        const blocks = 'ul|ol|blockquote|div';
+        result = result.replace(new RegExp(`(<br>)+\\s*(<(ul|ol|div)[^>]*>)`, 'gi'), '$2');
+        if (compact) {
+            result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '$2');
+            result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1');
+        }
+        else {
+            result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '<br><br>$2');
+            result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1<br>');
+        }
+        // Trim trailing breaks
+        result = result.replace(/(<br>)+$/i, '');
+        return result;
+    }
+    /**
+     * Create a reply on a conversation (draft by default)
+     */
+    async createReply(args) {
+        const input = CreateReplyInputSchema.parse(args);
+        const isDraft = input.draft !== false; // default true
+        // Block published replies unless env var is set
+        if (!isDraft && !config.helpscout.allowSendReply) {
+            return {
+                content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            error: 'Published replies are disabled',
+                            message: 'Sending non-draft replies requires HELPSCOUT_ALLOW_SEND_REPLY=true in the environment. This is a safety measure to prevent accidental sends. Draft replies are always allowed.',
+                            suggestion: 'Either set draft=true (default) to create a draft, or set the HELPSCOUT_ALLOW_SEND_REPLY=true environment variable to enable sending.',
+                        }, null, 2),
+                    }],
+            };
+        }
+        const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+        const requestBody = {
+            text,
+            customer: input.customer,
+            draft: isDraft,
+        };
+        if (input.user !== undefined)
+            requestBody.user = input.user;
+        if (input.assignTo !== undefined)
+            requestBody.assignTo = input.assignTo;
+        if (input.status !== undefined)
+            requestBody.status = input.status;
+        if (input.cc !== undefined)
+            requestBody.cc = input.cc;
+        if (input.bcc !== undefined)
+            requestBody.bcc = input.bcc;
+        const response = await helpScoutClient.postWithResponse(`/conversations/${input.conversationId}/reply`, requestBody);
+        const threadId = response.headers['resource-id'] || null;
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        threadId,
+                        draft: isDraft,
+                        message: isDraft
+                            ? 'Draft reply created successfully. It can be reviewed and sent from Help Scout.'
+                            : 'Reply sent successfully.',
+                    }),
+                }],
+        };
+    }
+    /**
+     * Create an internal note on a conversation
+     */
+    async createNote(args) {
+        const input = CreateNoteInputSchema.parse(args);
+        const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+        const requestBody = { text };
+        if (input.user !== undefined)
+            requestBody.user = input.user;
+        if (input.status !== undefined)
+            requestBody.status = input.status;
+        const response = await helpScoutClient.postWithResponse(`/conversations/${input.conversationId}/notes`, requestBody);
+        const threadId = response.headers['resource-id'] || null;
+        return {
+            content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        success: true,
+                        conversationId: input.conversationId,
+                        threadId,
+                        message: 'Internal note created successfully.',
+                    }),
+                }],
+        };
+    }
+}
+/**
+ * Shared TurndownService instance for HTML → Markdown conversion.
+ */
+ToolHandler.turndown = (() => {
+    const td = new TurndownService({
+        headingStyle: 'atx',
+        bulletListMarker: '-',
+        codeBlockStyle: 'fenced',
+        hr: '---',
+    });
+    // Convert <img> to markdown with alt text and src
+    td.addRule('images', {
+        filter: 'img',
+        replacement(_content, node) {
+            const el = node;
+            const alt = el.getAttribute('alt') || '';
+            const src = el.getAttribute('src') || '';
+            if (!src)
+                return '';
+            return `![${alt}](${src})`;
+        },
+    });
+    // Treat bare <pre> (without <code> child) as fenced code blocks
+    td.addRule('bare-pre', {
+        filter(node) {
+            return node.nodeName === 'PRE'
+                && !node.querySelector('code');
+        },
+        replacement(_content, node) {
+            const text = node.textContent || '';
+            return `\n\n\`\`\`\n${text.trim()}\n\`\`\`\n\n`;
+        },
+    });
+    // Convert <s>, <del>, <strike> to ~~strikethrough~~
+    td.addRule('strikethrough', {
+        filter: ['del', 's', 'strike'],
+        replacement(_content, node) {
+            const text = node.textContent || '';
+            return text ? `~~${text}~~` : '';
+        },
+    });
+    // Strip Help Scout signatures and style/script tags entirely
+    td.addRule('helpscout-signature', {
+        filter(node) {
+            return node.nodeName === 'DIV'
+                && node.classList?.contains('helpscout-signature') === true;
+        },
+        replacement() { return ''; },
+    });
+    td.remove(['style', 'script']);
+    return td;
+})();
+export const toolHandler = new ToolHandler();
+//# sourceMappingURL=index.js.map

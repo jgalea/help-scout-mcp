@@ -1,0 +1,436 @@
+import axios from 'axios';
+import { Agent as HttpAgent } from 'http';
+import { Agent as HttpsAgent } from 'https';
+import { config } from './config.js';
+import { logger } from './logger.js';
+import { cache } from './cache.js';
+/**
+ * Default connection pool settings optimized for Help Scout API
+ */
+const DEFAULT_POOL_CONFIG = {
+    maxSockets: 50, // Maximum concurrent connections
+    maxFreeSockets: 10, // Maximum idle connections to keep open
+    timeout: 30000, // Socket timeout (30s)
+    keepAlive: true, // Enable HTTP keep-alive
+    keepAliveMsecs: 1000, // Keep-alive probe interval
+};
+export class HelpScoutClient {
+    constructor(poolConfig = {}) {
+        this.accessToken = null;
+        this.tokenExpiresAt = 0;
+        this.authenticationPromise = null;
+        this.defaultRetryConfig = {
+            retries: 3,
+            retryDelay: 1000, // 1 second
+            maxRetryDelay: 10000, // 10 seconds
+            retryCondition: (error) => {
+                // Retry on network errors, timeouts, and 5xx responses
+                return !error.response ||
+                    error.code === 'ECONNABORTED' ||
+                    (error.response.status >= 500 && error.response.status < 600) ||
+                    error.response.status === 429; // Rate limits
+            }
+        };
+        // Merge default pool config with any custom settings
+        const finalPoolConfig = { ...DEFAULT_POOL_CONFIG, ...poolConfig };
+        // Create HTTP agents with connection pooling
+        this.httpAgent = new HttpAgent({
+            keepAlive: finalPoolConfig.keepAlive,
+            keepAliveMsecs: finalPoolConfig.keepAliveMsecs,
+            maxSockets: finalPoolConfig.maxSockets,
+            maxFreeSockets: finalPoolConfig.maxFreeSockets,
+            timeout: finalPoolConfig.timeout,
+        });
+        this.httpsAgent = new HttpsAgent({
+            keepAlive: finalPoolConfig.keepAlive,
+            keepAliveMsecs: finalPoolConfig.keepAliveMsecs,
+            maxSockets: finalPoolConfig.maxSockets,
+            maxFreeSockets: finalPoolConfig.maxFreeSockets,
+            timeout: finalPoolConfig.timeout,
+        });
+        // Create Axios instance with connection pooling agents
+        this.client = axios.create({
+            baseURL: config.helpscout.baseUrl,
+            timeout: 30000,
+            httpAgent: this.httpAgent,
+            httpsAgent: this.httpsAgent,
+            // Additional connection optimizations
+            maxRedirects: 5,
+            validateStatus: (status) => status < 500, // Don't throw on 4xx errors, handle them in transformError
+        });
+        this.setupInterceptors();
+        logger.info('HTTP connection pool initialized', {
+            maxSockets: finalPoolConfig.maxSockets,
+            maxFreeSockets: finalPoolConfig.maxFreeSockets,
+            keepAlive: finalPoolConfig.keepAlive,
+            timeout: finalPoolConfig.timeout,
+        });
+    }
+    async sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    calculateRetryDelay(attempt, baseDelay, maxDelay) {
+        // Exponential backoff with jitter
+        const exponentialDelay = baseDelay * Math.pow(2, attempt);
+        const jitter = Math.random() * 0.1 * exponentialDelay; // 10% jitter
+        return Math.min(exponentialDelay + jitter, maxDelay);
+    }
+    async executeWithRetry(operation, retryConfig = this.defaultRetryConfig) {
+        let lastError;
+        for (let attempt = 0; attempt <= retryConfig.retries; attempt++) {
+            try {
+                return await operation();
+            }
+            catch (error) {
+                lastError = error;
+                // Don't retry if it's the last attempt
+                if (attempt === retryConfig.retries) {
+                    break;
+                }
+                // Check if we should retry this error
+                if (!retryConfig.retryCondition?.(lastError)) {
+                    break;
+                }
+                // Handle rate limits specially
+                if (lastError.response?.status === 429) {
+                    const retryAfter = parseInt(lastError.response.headers['retry-after'] || '60', 10) * 1000;
+                    const delay = Math.min(retryAfter, retryConfig.maxRetryDelay);
+                    logger.warn('Rate limit hit, waiting before retry', {
+                        attempt: attempt + 1,
+                        retryAfter: delay,
+                        requestId: lastError.config?.metadata?.requestId,
+                    });
+                    await this.sleep(delay);
+                }
+                else {
+                    // Standard exponential backoff
+                    const delay = this.calculateRetryDelay(attempt, retryConfig.retryDelay, retryConfig.maxRetryDelay);
+                    logger.warn('Request failed, retrying', {
+                        attempt: attempt + 1,
+                        totalAttempts: retryConfig.retries + 1,
+                        delay,
+                        error: lastError.message,
+                        status: lastError.response?.status,
+                        requestId: lastError.config?.metadata?.requestId,
+                    });
+                    await this.sleep(delay);
+                }
+            }
+        }
+        // lastError should always be defined here since we only reach this point after catching an error
+        throw lastError || new Error('Request failed without error details');
+    }
+    setupInterceptors() {
+        // Request interceptor for authentication
+        this.client.interceptors.request.use(async (config) => {
+            await this.ensureAuthenticated();
+            if (this.accessToken) {
+                config.headers.Authorization = `Bearer ${this.accessToken}`;
+            }
+            const requestId = Math.random().toString(36).substring(7);
+            config.metadata = { requestId, startTime: Date.now() };
+            logger.debug('API request', {
+                requestId,
+                method: config.method?.toUpperCase(),
+                url: config.url,
+            });
+            return config;
+        });
+        // Response interceptor for logging and error handling
+        this.client.interceptors.response.use((response) => {
+            const duration = response.config.metadata ? Date.now() - response.config.metadata.startTime : 0;
+            logger.debug('API response', {
+                requestId: response.config.metadata?.requestId || 'unknown',
+                status: response.status,
+                duration,
+            });
+            return response;
+        }, (error) => {
+            const duration = error.config?.metadata ? Date.now() - error.config.metadata.startTime : 0;
+            const requestId = error.config?.metadata?.requestId || 'unknown';
+            logger.error('API error', {
+                requestId,
+                status: error.response?.status,
+                message: error.message,
+                duration,
+            });
+            return Promise.reject(this.transformError(error));
+        });
+    }
+    async ensureAuthenticated() {
+        // Check if token is still valid
+        if (this.accessToken && Date.now() < this.tokenExpiresAt) {
+            return;
+        }
+        // If authentication is already in progress, wait for it
+        if (this.authenticationPromise) {
+            return this.authenticationPromise;
+        }
+        // Start authentication and cache the promise to prevent concurrent auth requests
+        this.authenticationPromise = this.authenticate().finally(() => {
+            this.authenticationPromise = null;
+        });
+        return this.authenticationPromise;
+    }
+    async authenticate() {
+        try {
+            // OAuth2 Client Credentials flow (only supported method)
+            const clientId = config.helpscout.clientId;
+            const clientSecret = config.helpscout.clientSecret;
+            if (!clientId || !clientSecret) {
+                throw new Error('OAuth2 authentication required. Help Scout API only supports OAuth2 Client Credentials flow.\n' +
+                    'Set HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET environment variables.');
+            }
+            const response = await axios.post('https://api.helpscout.net/v2/oauth2/token', {
+                grant_type: 'client_credentials',
+                client_id: clientId,
+                client_secret: clientSecret,
+            });
+            this.accessToken = response.data.access_token;
+            this.tokenExpiresAt = Date.now() + (response.data.expires_in * 1000) - 60000; // 1 minute buffer
+            logger.info('Authenticated with Help Scout API using OAuth2 Client Credentials');
+        }
+        catch (error) {
+            logger.error('OAuth2 authentication failed', { error: error instanceof Error ? error.message : String(error) });
+            throw new Error('Failed to authenticate with Help Scout API. Check your OAuth2 credentials.');
+        }
+    }
+    transformError(error) {
+        const requestId = error.config?.metadata?.requestId || 'unknown';
+        const url = error.config?.url;
+        const method = error.config?.method?.toUpperCase();
+        // Log internal details but don't expose in API response
+        logger.error('API request failed', {
+            requestId,
+            url,
+            method,
+            status: error.response?.status,
+        });
+        if (error.response?.status === 401) {
+            this.accessToken = null; // Force re-authentication
+            return {
+                code: 'UNAUTHORIZED',
+                message: 'Help Scout authentication failed. Please check your API credentials.',
+                details: {
+                    requestId,
+                    suggestion: 'Verify HELPSCOUT_APP_ID and HELPSCOUT_APP_SECRET are valid',
+                },
+            };
+        }
+        if (error.response?.status === 403) {
+            return {
+                code: 'UNAUTHORIZED',
+                message: 'Access forbidden. Insufficient permissions for this Help Scout resource.',
+                details: {
+                    requestId,
+                    suggestion: 'Check if your OAuth2 app has access to this mailbox or resource',
+                },
+            };
+        }
+        if (error.response?.status === 404) {
+            return {
+                code: 'NOT_FOUND',
+                message: 'Help Scout resource not found. The requested conversation, mailbox, or thread does not exist.',
+                details: {
+                    requestId,
+                    suggestion: 'Verify the ID is correct and the resource exists',
+                },
+            };
+        }
+        if (error.response?.status === 429) {
+            const retryAfter = parseInt(error.response.headers['retry-after'] || '60', 10);
+            return {
+                code: 'RATE_LIMIT',
+                message: `Help Scout API rate limit exceeded. Please wait ${retryAfter} ${retryAfter === 1 ? 'second' : 'seconds'} before retrying.`,
+                retryAfter,
+                details: {
+                    requestId,
+                    suggestion: 'Reduce request frequency or implement request batching',
+                },
+            };
+        }
+        if (error.response?.status === 422) {
+            const responseData = error.response.data || {};
+            return {
+                code: 'INVALID_INPUT',
+                message: `Help Scout API validation error: ${responseData.message || 'Invalid request data'}`,
+                details: {
+                    requestId,
+                    validationErrors: responseData.errors || responseData,
+                    suggestion: 'Check the request parameters match Help Scout API requirements',
+                },
+            };
+        }
+        if (error.response?.status && error.response.status >= 400 && error.response.status < 500) {
+            const responseData = error.response.data || {};
+            return {
+                code: 'INVALID_INPUT',
+                message: `Help Scout API client error: ${responseData.message || 'Invalid request'}`,
+                details: {
+                    requestId,
+                    statusCode: error.response.status,
+                    apiResponse: responseData,
+                },
+            };
+        }
+        if (error.code === 'ECONNABORTED') {
+            return {
+                code: 'UPSTREAM_ERROR',
+                message: 'Help Scout API request timed out. The service may be experiencing high load.',
+                details: {
+                    requestId,
+                    errorCode: error.code,
+                    suggestion: 'Request will be automatically retried with exponential backoff',
+                },
+            };
+        }
+        if (error.response?.status && error.response.status >= 500) {
+            return {
+                code: 'UPSTREAM_ERROR',
+                message: `Help Scout API server error (${error.response.status}). The service is temporarily unavailable.`,
+                details: {
+                    requestId,
+                    statusCode: error.response.status,
+                    suggestion: 'Request will be automatically retried with exponential backoff',
+                },
+            };
+        }
+        return {
+            code: 'UPSTREAM_ERROR',
+            message: `Help Scout API error: ${error.message || 'Unknown upstream service error'}`,
+            details: {
+                requestId,
+                errorCode: error.code,
+                suggestion: 'Check your network connection and Help Scout service status',
+            },
+        };
+    }
+    async get(endpoint, params, cacheOptions) {
+        const cacheKey = `GET:${endpoint}`;
+        const cachedResult = cache.get(cacheKey, params);
+        if (cachedResult) {
+            return cachedResult;
+        }
+        const response = await this.executeWithRetry(() => this.client.get(endpoint, { params }));
+        if (cacheOptions?.ttl || cacheOptions?.ttl === 0) {
+            cache.set(cacheKey, params, response.data, { ttl: cacheOptions.ttl });
+        }
+        else {
+            // Default cache TTL based on endpoint
+            const defaultTtl = this.getDefaultCacheTtl(endpoint);
+            cache.set(cacheKey, params, response.data, { ttl: defaultTtl });
+        }
+        return response.data;
+    }
+    getDefaultCacheTtl(endpoint) {
+        if (endpoint.includes('/conversations'))
+            return 300; // 5 minutes
+        if (endpoint.includes('/mailboxes'))
+            return 1440; // 24 minutes
+        if (endpoint.includes('/threads'))
+            return 300; // 5 minutes
+        return 300; // Default 5 minutes
+    }
+    async postWithResponse(endpoint, data, params) {
+        const response = await this.executeWithRetry(() => this.client.post(endpoint, data, {
+            params,
+            headers: { 'Content-Type': 'application/json' }
+        }));
+        return {
+            status: response.status,
+            headers: response.headers,
+            data: response.data,
+        };
+    }
+    async patch(endpoint, data) {
+        const response = await this.executeWithRetry(() => this.client.patch(endpoint, data, {
+            headers: { 'Content-Type': 'application/json' }
+        }));
+        return {
+            status: response.status,
+            headers: response.headers,
+        };
+    }
+    async put(endpoint, data) {
+        const response = await this.executeWithRetry(() => this.client.put(endpoint, data, {
+            headers: { 'Content-Type': 'application/json' }
+        }));
+        return {
+            status: response.status,
+            headers: response.headers,
+        };
+    }
+    async testConnection() {
+        try {
+            await this.get('/mailboxes', { page: 1, size: 1 });
+            return true;
+        }
+        catch (error) {
+            logger.error('Connection test failed', { error: error instanceof Error ? error.message : String(error) });
+            return false;
+        }
+    }
+    /**
+     * Get connection pool statistics for monitoring
+     */
+    getPoolStats() {
+        return {
+            http: {
+                sockets: Object.keys(this.httpAgent.sockets).length,
+                freeSockets: Object.keys(this.httpAgent.freeSockets).length,
+                pending: Object.keys(this.httpAgent.requests).length,
+            },
+            https: {
+                sockets: Object.keys(this.httpsAgent.sockets).length,
+                freeSockets: Object.keys(this.httpsAgent.freeSockets).length,
+                pending: Object.keys(this.httpsAgent.requests).length,
+            },
+        };
+    }
+    /**
+     * Gracefully close all connections in the pool
+     */
+    async closePool() {
+        logger.info('Closing HTTP connection pool');
+        // Agent.destroy() is synchronous and immediately closes connections
+        // so we don't need to wait for async callbacks
+        this.httpAgent.destroy();
+        this.httpsAgent.destroy();
+        // Give a small delay to ensure connections are cleaned up
+        await this.sleep(100);
+        logger.info('All HTTP connections closed');
+    }
+    /**
+     * Clear idle connections to free up resources
+     */
+    clearIdleConnections() {
+        const stats = this.getPoolStats();
+        // Force destroy all agent connections by recreating them
+        this.httpAgent.destroy();
+        this.httpsAgent.destroy();
+        // Recreate agents with same configuration
+        const poolConfig = {
+            keepAlive: true,
+            keepAliveMsecs: 1000,
+            maxSockets: 50,
+            maxFreeSockets: 10,
+            timeout: 30000,
+        };
+        this.httpAgent = new HttpAgent(poolConfig);
+        this.httpsAgent = new HttpsAgent(poolConfig);
+        logger.debug('Cleared idle connections', {
+            clearedHttp: stats.http.freeSockets,
+            clearedHttps: stats.https.freeSockets,
+        });
+    }
+    /**
+     * Log current connection pool status for monitoring
+     */
+    logPoolStatus() {
+        const stats = this.getPoolStats();
+        logger.debug('Connection pool status', stats);
+    }
+}
+// Create client instance with connection pool config from environment
+export const helpScoutClient = new HelpScoutClient(config.connectionPool);
+//# sourceMappingURL=helpscout-client.js.map
