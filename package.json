@@ -29,6 +29,7 @@
     "version:patch": "node scripts/bump-version.cjs patch",
     "version:minor": "node scripts/bump-version.cjs minor",
     "version:major": "node scripts/bump-version.cjs major",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build",
     "prepack": "npm run build",
     "mcpb:build": "node scripts/build-mcpb.js",
