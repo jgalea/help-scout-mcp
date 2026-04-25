@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "help-scout-mcp",
   "display_name": "Help Scout MCP Server",
-  "version": "2.0.0",
+  "version": "2.4.4",
   "description": "Help Scout MCP server — search and summarize support tickets, manage conversations with full transcripts, create draft or published replies, browse and edit Docs articles, and generate email, chat, and happiness reports",
   "long_description": "Help Scout integration for AI assistants.\n\n**Core Features:**\n- Advanced conversation search with query syntax\n- Multi-status search across active/pending/closed conversations\n- Inline transcripts for single-call ticket summarization\n- Structured filtering by ticket number, assignee, customer, or folder\n- Complete thread message retrieval with transcript format\n- Conversation summaries with customer and staff messages\n- Create draft or published replies with HTML formatting optimized for Help Scout\n- Inbox discovery and server time utilities\n\n**Optional Features** (require additional configuration):\n- Full Docs API integration (articles, collections, categories)\n- Complete Reports API (email, chat, phone, happiness, company)\n\n**Security:**\n- OAuth2 Client Credentials authentication\n- Draft-only replies by default (set `HELPSCOUT_ALLOW_SEND_REPLY=true` to allow published replies)\n- Optional message content redaction via `REDACT_MESSAGE_CONTENT`\n- Comprehensive audit logging\n- Rate limiting with automatic retry",
   "author": {
