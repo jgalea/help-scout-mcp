@@ -93,3 +93,7 @@ WORKFLOW.md
 test-results/
 benchmark-results/
 perf-reports/
+
+# Local-only — security audit findings, not for publication.
+SECURITY-AUDIT.md
+
