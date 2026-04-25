@@ -11,8 +11,7 @@
     "dist/",
     "mcp.json",
     "README.md",
-    "LICENSE",
-    "claude-desktop-config.json"
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
