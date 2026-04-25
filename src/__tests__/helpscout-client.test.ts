@@ -13,6 +13,7 @@ jest.mock('../utils/logger.js', () => ({
     debug: jest.fn(),
     warn: jest.fn(),
   },
+  redactArgs: jest.fn((args: unknown) => args),
 }));
 
 // Mock cache to prevent interference between tests

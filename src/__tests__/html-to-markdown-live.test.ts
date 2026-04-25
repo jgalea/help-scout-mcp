@@ -25,6 +25,7 @@ jest.mock('../utils/config.js', () => ({
 }));
 jest.mock('../utils/logger.js', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  redactArgs: jest.fn((args: unknown) => args),
 }));
 jest.mock('../utils/cache.js', () => ({
   cache: { get: jest.fn(), set: jest.fn(), has: jest.fn(() => false), delete: jest.fn(), clear: jest.fn() },

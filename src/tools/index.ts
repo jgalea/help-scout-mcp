@@ -12,6 +12,7 @@ import { cache } from '../utils/cache.js';
 import { z } from 'zod';
 import TurndownService from 'turndown';
 import { detectMimeType, extForMime, isImageMime } from '../utils/mime.js';
+import { sanitizeReplyHtml } from '../utils/html-sanitize.js';
 
 /**
  * Constants for tool operations
@@ -2025,7 +2026,7 @@ export class ToolHandler {
       status: input.status,
       threads: input.threads.map(thread => ({
         ...thread,
-        text: this.formatReplyHtml(thread.text, compact),
+        text: this.formatReplyHtml(sanitizeReplyHtml(thread.text), compact),
       })),
     };
 
@@ -2211,7 +2212,7 @@ export class ToolHandler {
       };
     }
 
-    const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+    const text = this.formatReplyHtml(sanitizeReplyHtml(input.text), config.helpscout.replySpacing === 'compact');
 
     const requestBody: Record<string, unknown> = {
       text,
@@ -2253,7 +2254,7 @@ export class ToolHandler {
   private async createNote(args: unknown): Promise<CallToolResult> {
     const input = CreateNoteInputSchema.parse(args);
 
-    const text = this.formatReplyHtml(input.text, config.helpscout.replySpacing === 'compact');
+    const text = this.formatReplyHtml(sanitizeReplyHtml(input.text), config.helpscout.replySpacing === 'compact');
 
     const requestBody: Record<string, unknown> = { text };
     if (input.user !== undefined) requestBody.user = input.user;

@@ -3,6 +3,7 @@ import { DocsPaginatedResponse } from '../utils/helpscout-docs-client.js';
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
 import { isVerbose } from '../utils/config.js';
+import { sanitizeDocsHtml } from '../utils/html-sanitize.js';
 import { compactTool } from './tool-utils.js';
 import { z } from 'zod';
 
@@ -1413,7 +1414,7 @@ export class DocsToolHandler extends Injectable {
     // Build update payload
     const updateData: Record<string, unknown> = {};
     if (input.name !== undefined) updateData.name = input.name;
-    if (input.text !== undefined) updateData.text = collapseBlockWhitespace(input.text);
+    if (input.text !== undefined) updateData.text = collapseBlockWhitespace(sanitizeDocsHtml(input.text));
     if (input.status !== undefined) updateData.status = input.status;
     if (input.categories !== undefined) updateData.categories = input.categories;
     if (input.related !== undefined) updateData.related = input.related;
@@ -2048,7 +2049,7 @@ export class DocsToolHandler extends Injectable {
       const articleData: any = {
         collectionId: input.collectionId,
         name: input.name,
-        text: collapseBlockWhitespace(input.text),
+        text: collapseBlockWhitespace(sanitizeDocsHtml(input.text)),
         status: input.status,
         visibility: input.visibility,
       };
@@ -2519,7 +2520,7 @@ export class DocsToolHandler extends Injectable {
     
     try {
       const draftData: any = {
-        text: collapseBlockWhitespace(input.text),
+        text: collapseBlockWhitespace(sanitizeDocsHtml(input.text)),
       };
       if (input.name) draftData.name = input.name;
       

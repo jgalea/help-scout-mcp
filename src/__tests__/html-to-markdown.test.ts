@@ -45,6 +45,7 @@ jest.mock('../utils/logger.js', () => ({
     error: jest.fn(),
     debug: jest.fn(),
   },
+  redactArgs: jest.fn((args: unknown) => args),
 }));
 
 jest.mock('../utils/cache.js', () => ({
