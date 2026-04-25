@@ -20,7 +20,7 @@ describe('Config Validation', () => {
   describe('validateConfig', () => {
     it('should pass with valid OAuth2 configuration using APP_ID/APP_SECRET', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.HELPSCOUT_BASE_URL = 'https://api.helpscout.net/v2/';
 
       jest.resetModules();
@@ -30,7 +30,7 @@ describe('Config Validation', () => {
 
     it('should pass with valid OAuth2 configuration using CLIENT_ID/CLIENT_SECRET', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret-of-realistic-length-32';
       process.env.HELPSCOUT_BASE_URL = 'https://api.helpscout.net/v2/';
 
       jest.resetModules();
@@ -40,7 +40,7 @@ describe('Config Validation', () => {
 
     it('should reject legacy API_KEY without APP_ID', async () => {
       process.env.HELPSCOUT_API_KEY = 'client-id';
-      process.env.HELPSCOUT_APP_SECRET = 'client-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'client-secret-of-realistic-length-32';
       process.env.HELPSCOUT_BASE_URL = 'https://api.helpscout.net/v2/';
 
       jest.resetModules();
@@ -74,7 +74,7 @@ describe('Config Validation', () => {
 
     it('should throw error when base URL uses HTTP instead of HTTPS', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.HELPSCOUT_BASE_URL = 'http://api.helpscout.net/v2/';
 
       jest.resetModules();
@@ -84,7 +84,7 @@ describe('Config Validation', () => {
 
     it('should use default base URL when not provided', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       delete process.env.HELPSCOUT_BASE_URL;
 
       jest.resetModules();
@@ -94,7 +94,7 @@ describe('Config Validation', () => {
 
     it('should handle boolean environment variables correctly', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.ALLOW_PII = 'true';
       process.env.CACHE_TTL_SECONDS = '600';
       process.env.LOG_LEVEL = 'debug';
@@ -106,7 +106,7 @@ describe('Config Validation', () => {
 
     it('should handle invalid boolean values gracefully', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.ALLOW_PII = 'invalid-boolean';
 
       jest.resetModules();
@@ -116,7 +116,7 @@ describe('Config Validation', () => {
 
     it('should handle invalid numeric values gracefully', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.CACHE_TTL_SECONDS = 'not-a-number';
 
       jest.resetModules();
@@ -128,6 +128,56 @@ describe('Config Validation', () => {
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
       expect(() => validateConfig()).toThrow(/HELPSCOUT_APP_ID/);
+    });
+
+    it('should reject HELPSCOUT_BASE_URL with non-Help-Scout hostname', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
+      process.env.HELPSCOUT_BASE_URL = 'https://evil.example.com/v2/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/not in the allowlist/);
+    });
+
+    it('should accept api.helpscout.com as well as api.helpscout.net', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
+      process.env.HELPSCOUT_BASE_URL = 'https://api.helpscout.com/v2/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).not.toThrow();
+    });
+
+    it('should reject HELPSCOUT_DOCS_BASE_URL with non-allowed hostname', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
+      process.env.HELPSCOUT_DOCS_BASE_URL = 'https://evil.example.com/v1/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/not in the allowlist/);
+    });
+
+    it('should reject HELPSCOUT_DOCS_BASE_URL using HTTP', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
+      process.env.HELPSCOUT_DOCS_BASE_URL = 'http://docsapi.helpscout.net/v1/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/HTTPS/);
+    });
+
+    it('should reject HELPSCOUT_APP_SECRET shorter than 24 chars', async () => {
+      process.env.HELPSCOUT_APP_ID = 'app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'short';
+      process.env.HELPSCOUT_BASE_URL = 'https://api.helpscout.net/v2/';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/too short/);
     });
   });
 });

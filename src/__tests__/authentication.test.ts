@@ -71,7 +71,7 @@ describe('Authentication Configuration', () => {
   describe('validateConfig with OAuth2', () => {
     it('should pass with APP_ID/APP_SECRET', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
@@ -80,7 +80,7 @@ describe('Authentication Configuration', () => {
 
     it('should pass with CLIENT_ID/CLIENT_SECRET', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'client-id';
-      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret';
+      process.env.HELPSCOUT_CLIENT_SECRET = 'client-secret-of-realistic-length-32';
 
       jest.resetModules();
       const { validateConfig } = await import('../utils/config.js');
@@ -140,7 +140,7 @@ describe('Authentication Configuration', () => {
 
     it('should enforce HTTPS for base URL', async () => {
       process.env.HELPSCOUT_APP_ID = 'app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'app-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'app-secret-of-realistic-length-32';
       process.env.HELPSCOUT_BASE_URL = 'http://api.helpscout.net/v2/';
 
       jest.resetModules();
@@ -152,25 +152,25 @@ describe('Authentication Configuration', () => {
   describe('Mixed naming scenarios', () => {
     it('should handle mixed APP_ID and legacy APP_SECRET', async () => {
       process.env.HELPSCOUT_APP_ID = 'new-app-id';
-      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret-of-realistic-length-32';
 
       jest.resetModules();
       const { config, validateConfig } = await import('../utils/config.js');
 
       expect(config.helpscout.clientId).toBe('new-app-id');
-      expect(config.helpscout.clientSecret).toBe('legacy-secret');
+      expect(config.helpscout.clientSecret).toBe('legacy-secret-of-realistic-length-32');
       expect(() => validateConfig()).not.toThrow();
     });
 
     it('should handle CLIENT_ID with APP_SECRET', async () => {
       process.env.HELPSCOUT_CLIENT_ID = 'new-client-id';
-      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret';
+      process.env.HELPSCOUT_APP_SECRET = 'legacy-secret-of-realistic-length-32';
 
       jest.resetModules();
       const { config, validateConfig } = await import('../utils/config.js');
 
       expect(config.helpscout.clientId).toBe('new-client-id');
-      expect(config.helpscout.clientSecret).toBe('legacy-secret');
+      expect(config.helpscout.clientSecret).toBe('legacy-secret-of-realistic-length-32');
       expect(() => validateConfig()).not.toThrow();
     });
   });

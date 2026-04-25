@@ -132,4 +132,69 @@ export function validateConfig(): void {
       'Please use: https://api.helpscout.net/v2/'
     );
   }
+
+  // Constrain HELPSCOUT_BASE_URL to known Help Scout hosts. The OAuth2
+  // bearer token is sent on every authenticated request, so a misconfigured
+  // (or attacker-controlled) base URL would exfiltrate it.
+  const ALLOWED_HOSTS = new Set([
+    'api.helpscout.net',
+    'api.helpscout.com',
+  ]);
+  if (config.helpscout.baseUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(config.helpscout.baseUrl);
+    } catch {
+      throw new Error(
+        `Security Error: HELPSCOUT_BASE_URL is not a valid URL.\n` +
+        `Current value: ${config.helpscout.baseUrl}`
+      );
+    }
+    if (!ALLOWED_HOSTS.has(parsed.hostname)) {
+      throw new Error(
+        `Security Error: HELPSCOUT_BASE_URL host "${parsed.hostname}" is not in the allowlist. ` +
+        `Allowed hosts: ${[...ALLOWED_HOSTS].join(', ')}.`
+      );
+    }
+  }
+
+  // Same treatment for the Docs API host. The Docs API key travels via
+  // HTTP basic auth, which is just as sensitive.
+  const ALLOWED_DOCS_HOSTS = new Set([
+    'docsapi.helpscout.net',
+  ]);
+  if (config.helpscout.docsBaseUrl) {
+    if (!config.helpscout.docsBaseUrl.startsWith('https://')) {
+      throw new Error(
+        'Security Error: HELPSCOUT_DOCS_BASE_URL must use HTTPS to protect credentials in transit.\n' +
+        `Current value: ${config.helpscout.docsBaseUrl}\n` +
+        'Please use: https://docsapi.helpscout.net/v1/'
+      );
+    }
+    let parsedDocs: URL;
+    try {
+      parsedDocs = new URL(config.helpscout.docsBaseUrl);
+    } catch {
+      throw new Error(
+        `Security Error: HELPSCOUT_DOCS_BASE_URL is not a valid URL.\n` +
+        `Current value: ${config.helpscout.docsBaseUrl}`
+      );
+    }
+    if (!ALLOWED_DOCS_HOSTS.has(parsedDocs.hostname)) {
+      throw new Error(
+        `Security Error: HELPSCOUT_DOCS_BASE_URL host "${parsedDocs.hostname}" is not in the allowlist. ` +
+        `Allowed hosts: ${[...ALLOWED_DOCS_HOSTS].join(', ')}.`
+      );
+    }
+  }
+
+  // Reject obviously-too-short app secrets. Real Help Scout secrets are
+  // 32 chars alphanumeric; anything <24 chars is almost certainly a
+  // dummy/test value.
+  if (config.helpscout.clientSecret && config.helpscout.clientSecret.length < 24) {
+    throw new Error(
+      'Security Error: HELPSCOUT_APP_SECRET appears too short to be a real Help Scout secret. ' +
+      'Expected at least 24 characters.'
+    );
+  }
 }
