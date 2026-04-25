@@ -113,15 +113,16 @@ const writeDocsSiteAllowlist = parseAllowlist(process.env.HELPSCOUT_WRITE_DOCS_S
 /**
  * Check whether a mailbox ID is allowed for write operations.
  *
- * Default-allow: when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset, every
- * mailbox passes (preserves existing behavior for users who haven't
- * opted in). When the env var is set, only listed IDs pass.
+ * Default-deny: when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset, every
+ * write is rejected. Operators must explicitly enumerate mailbox IDs
+ * to enable writes. This forces explicit configuration of the blast
+ * radius for an LLM-driven session.
  *
  * Comparison is string-based so callers can pass numbers or strings;
  * the env var is parsed as a string set.
  */
 export function isWriteInboxAllowed(mailboxId: string | number | undefined | null): boolean {
-  if (writeInboxAllowlist === null) return true;
+  if (writeInboxAllowlist === null) return false;
   if (mailboxId === undefined || mailboxId === null) return false;
   return writeInboxAllowlist.has(String(mailboxId));
 }
@@ -136,9 +137,10 @@ export function getWriteInboxAllowlist(): string[] | null {
 
 /**
  * Same shape as isWriteInboxAllowed, but for Help Scout Docs site IDs.
+ * Default-deny: unset env var means no Docs writes permitted.
  */
 export function isWriteDocsSiteAllowed(siteId: string | number | undefined | null): boolean {
-  if (writeDocsSiteAllowlist === null) return true;
+  if (writeDocsSiteAllowlist === null) return false;
   if (siteId === undefined || siteId === null) return false;
   return writeDocsSiteAllowlist.has(String(siteId));
 }

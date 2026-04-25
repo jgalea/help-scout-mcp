@@ -112,17 +112,19 @@ export class DocsToolHandler extends Injectable {
    */
   private buildDocsSiteNotAllowedResult(siteId: string | number | undefined | null): CallToolResult {
     const allowlist = getWriteDocsSiteAllowlist();
+    const target = siteId === undefined || siteId === null ? '(unknown)' : siteId;
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           error: 'Docs site not in write allowlist',
-          message:
-            `Docs write operations are restricted to site IDs in HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST. ` +
-            `Target site ${siteId === undefined || siteId === null ? '(unknown)' : siteId} is not allowed.`,
+          message: allowlist === null
+            ? `Docs write operations are blocked. HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST is not set; no Docs site is permitted to receive writes.`
+            : `Docs write operations are restricted to site IDs in HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST. Target site ${target} is not allowed.`,
           allowedSiteIds: allowlist,
-          suggestion:
-            'Either choose a target in an allowed site, or update HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST.',
+          suggestion: allowlist === null
+            ? 'Set HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST to a comma-separated list of site IDs to enable Docs writes.'
+            : 'Either choose a target in an allowed site, or update HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST.',
         }),
       }],
       isError: true,

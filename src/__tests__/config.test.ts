@@ -182,14 +182,14 @@ describe('Config Validation', () => {
   });
 
   describe('write inbox allowlist', () => {
-    it('default-allows when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset', async () => {
+    it('default-denies when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset', async () => {
       delete process.env.HELPSCOUT_WRITE_INBOX_ALLOWLIST;
       jest.resetModules();
       const { isWriteInboxAllowed, getWriteInboxAllowlist } = await import('../utils/config.js');
       expect(getWriteInboxAllowlist()).toBeNull();
-      expect(isWriteInboxAllowed('123')).toBe(true);
-      expect(isWriteInboxAllowed(456)).toBe(true);
-      expect(isWriteInboxAllowed(undefined)).toBe(true);
+      expect(isWriteInboxAllowed('123')).toBe(false);
+      expect(isWriteInboxAllowed(456)).toBe(false);
+      expect(isWriteInboxAllowed(undefined)).toBe(false);
     });
 
     it('only allows listed mailbox IDs when set', async () => {
@@ -205,13 +205,13 @@ describe('Config Validation', () => {
   });
 
   describe('write docs site allowlist', () => {
-    it('default-allows when HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST is unset', async () => {
+    it('default-denies when HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST is unset', async () => {
       delete process.env.HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST;
       jest.resetModules();
       const { isWriteDocsSiteAllowed, getWriteDocsSiteAllowlist } = await import('../utils/config.js');
       expect(getWriteDocsSiteAllowlist()).toBeNull();
-      expect(isWriteDocsSiteAllowed('site-1')).toBe(true);
-      expect(isWriteDocsSiteAllowed(undefined)).toBe(true);
+      expect(isWriteDocsSiteAllowed('site-1')).toBe(false);
+      expect(isWriteDocsSiteAllowed(undefined)).toBe(false);
     });
 
     it('only allows listed site IDs when set', async () => {

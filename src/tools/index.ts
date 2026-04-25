@@ -126,17 +126,19 @@ export class ToolHandler {
    */
   private buildInboxNotAllowedResult(mailboxId: string | number | undefined | null): CallToolResult {
     const allowlist = getWriteInboxAllowlist();
+    const target = mailboxId === undefined || mailboxId === null ? '(unknown)' : mailboxId;
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           error: 'Mailbox not in write allowlist',
-          message:
-            `Write operations are restricted to mailbox IDs in HELPSCOUT_WRITE_INBOX_ALLOWLIST. ` +
-            `Target mailbox ${mailboxId === undefined || mailboxId === null ? '(unknown)' : mailboxId} is not allowed.`,
+          message: allowlist === null
+            ? `Write operations are blocked. HELPSCOUT_WRITE_INBOX_ALLOWLIST is not set; no mailbox is permitted to receive writes.`
+            : `Write operations are restricted to mailbox IDs in HELPSCOUT_WRITE_INBOX_ALLOWLIST. Target mailbox ${target} is not allowed.`,
           allowedMailboxIds: allowlist,
-          suggestion:
-            'Either choose a mailbox from the allowlist, or update the HELPSCOUT_WRITE_INBOX_ALLOWLIST env var.',
+          suggestion: allowlist === null
+            ? 'Set HELPSCOUT_WRITE_INBOX_ALLOWLIST to a comma-separated list of mailbox IDs to enable writes.'
+            : 'Either choose a mailbox from the allowlist, or update the HELPSCOUT_WRITE_INBOX_ALLOWLIST env var.',
         }),
       }],
       isError: true,
