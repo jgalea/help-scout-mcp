@@ -94,6 +94,59 @@ export function isVerbose(args: unknown): boolean {
   return config.responses.verbose;
 }
 
+/**
+ * Parse a comma-separated env var into a Set of trimmed non-empty
+ * strings. Returns null when the env var is unset or empty — callers
+ * use null to mean "no allowlist enforced".
+ */
+function parseAllowlist(envVar: string | undefined): Set<string> | null {
+  if (!envVar) return null;
+  const trimmed = envVar.trim();
+  if (!trimmed) return null;
+  const ids = trimmed.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  return ids.length > 0 ? new Set(ids) : null;
+}
+
+const writeInboxAllowlist = parseAllowlist(process.env.HELPSCOUT_WRITE_INBOX_ALLOWLIST);
+const writeDocsSiteAllowlist = parseAllowlist(process.env.HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST);
+
+/**
+ * Check whether a mailbox ID is allowed for write operations.
+ *
+ * Default-allow: when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset, every
+ * mailbox passes (preserves existing behavior for users who haven't
+ * opted in). When the env var is set, only listed IDs pass.
+ *
+ * Comparison is string-based so callers can pass numbers or strings;
+ * the env var is parsed as a string set.
+ */
+export function isWriteInboxAllowed(mailboxId: string | number | undefined | null): boolean {
+  if (writeInboxAllowlist === null) return true;
+  if (mailboxId === undefined || mailboxId === null) return false;
+  return writeInboxAllowlist.has(String(mailboxId));
+}
+
+/**
+ * The configured write inbox allowlist as a sorted array, or null if
+ * unset. Surface for error messages so the LLM knows which IDs are OK.
+ */
+export function getWriteInboxAllowlist(): string[] | null {
+  return writeInboxAllowlist ? [...writeInboxAllowlist].sort() : null;
+}
+
+/**
+ * Same shape as isWriteInboxAllowed, but for Help Scout Docs site IDs.
+ */
+export function isWriteDocsSiteAllowed(siteId: string | number | undefined | null): boolean {
+  if (writeDocsSiteAllowlist === null) return true;
+  if (siteId === undefined || siteId === null) return false;
+  return writeDocsSiteAllowlist.has(String(siteId));
+}
+
+export function getWriteDocsSiteAllowlist(): string[] | null {
+  return writeDocsSiteAllowlist ? [...writeDocsSiteAllowlist].sort() : null;
+}
+
 export function validateConfig(): void {
   // Check if user is trying to use deprecated Personal Access Token
   if (process.env.HELPSCOUT_API_KEY?.startsWith('Bearer ')) {

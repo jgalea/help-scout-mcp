@@ -36,6 +36,10 @@ jest.mock('../utils/config.js', () => ({
     }
     return process.env.HELPSCOUT_VERBOSE_RESPONSES === 'true';
   },
+  isWriteInboxAllowed: jest.fn(() => true),
+  getWriteInboxAllowlist: jest.fn(() => null),
+  isWriteDocsSiteAllowed: jest.fn(() => true),
+  getWriteDocsSiteAllowlist: jest.fn(() => null),
 }));
 
 // Mock logger to reduce test output noise

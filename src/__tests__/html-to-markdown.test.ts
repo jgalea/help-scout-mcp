@@ -36,6 +36,10 @@ jest.mock('../utils/config.js', () => ({
   },
   validateConfig: jest.fn(),
   isVerbose: () => false,
+  isWriteInboxAllowed: () => true,
+  getWriteInboxAllowlist: () => null,
+  isWriteDocsSiteAllowed: () => true,
+  getWriteDocsSiteAllowlist: () => null,
 }));
 
 jest.mock('../utils/logger.js', () => ({

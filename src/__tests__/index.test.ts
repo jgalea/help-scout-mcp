@@ -2,6 +2,10 @@
 jest.mock('../utils/config.js', () => ({
   validateConfig: jest.fn(),
   isVerbose: jest.fn(() => false),
+  isWriteInboxAllowed: jest.fn(() => true),
+  getWriteInboxAllowlist: jest.fn(() => null),
+  isWriteDocsSiteAllowed: jest.fn(() => true),
+  getWriteDocsSiteAllowlist: jest.fn(() => null),
   config: {
     helpscout: {
       clientId: 'test-client-id',

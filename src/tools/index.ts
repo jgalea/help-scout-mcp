@@ -7,7 +7,7 @@ import { DocsToolHandler } from './docs-tools.js';
 import { ReportsToolHandler } from './reports-tools.js';
 import { compactTool } from './tool-utils.js';
 import { logger, redactArgs } from '../utils/logger.js';
-import { config, isVerbose } from '../utils/config.js';
+import { config, isVerbose, isWriteInboxAllowed, getWriteInboxAllowlist } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
 import { z } from 'zod';
 import crypto from 'crypto';
@@ -117,6 +117,51 @@ export class ToolHandler {
     this.docsToolHandler = new DocsToolHandler(container);
     // Initialize ReportsToolHandler with the same container
     this.reportsToolHandler = new ReportsToolHandler(container);
+  }
+
+  /**
+   * Build a CallToolResult that explains the write allowlist rejection
+   * to the LLM. Used by the four write tools when a mailbox isn't in
+   * HELPSCOUT_WRITE_INBOX_ALLOWLIST.
+   */
+  private buildInboxNotAllowedResult(mailboxId: string | number | undefined | null): CallToolResult {
+    const allowlist = getWriteInboxAllowlist();
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          error: 'Mailbox not in write allowlist',
+          message:
+            `Write operations are restricted to mailbox IDs in HELPSCOUT_WRITE_INBOX_ALLOWLIST. ` +
+            `Target mailbox ${mailboxId === undefined || mailboxId === null ? '(unknown)' : mailboxId} is not allowed.`,
+          allowedMailboxIds: allowlist,
+          suggestion:
+            'Either choose a mailbox from the allowlist, or update the HELPSCOUT_WRITE_INBOX_ALLOWLIST env var.',
+        }),
+      }],
+      isError: true,
+    };
+  }
+
+  /**
+   * Resolve the mailboxId for an existing conversation. Used by
+   * createReply / createNote / updateConversation to enforce the write
+   * inbox allowlist when no mailboxId is in the tool input.
+   *
+   * Returns null if the conversation can't be fetched — callers treat
+   * null as "unable to verify, reject" when an allowlist is in effect.
+   */
+  private async resolveConversationMailboxId(conversationId: string): Promise<number | string | null> {
+    try {
+      const conv = await helpScoutClient.get<Conversation>(
+        `/conversations/${conversationId}`,
+        {},
+      );
+      const mailboxId = (conv as any).mailboxId ?? (conv as any).mailbox?.id;
+      return mailboxId ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2037,6 +2082,12 @@ export class ToolHandler {
   private async createConversation(args: unknown): Promise<CallToolResult> {
     const input = CreateConversationInputSchema.parse(args);
 
+    // Enforce write inbox allowlist (if configured). Default-allow when
+    // unset for backwards compat.
+    if (!isWriteInboxAllowed(input.mailboxId)) {
+      return this.buildInboxNotAllowedResult(input.mailboxId);
+    }
+
     const compact = config.helpscout.replySpacing === 'compact';
 
     const requestBody: Record<string, unknown> = {
@@ -2107,6 +2158,14 @@ export class ToolHandler {
    */
   private async updateConversation(args: unknown): Promise<CallToolResult> {
     const input = UpdateConversationInputSchema.parse(args);
+
+    if (getWriteInboxAllowlist() !== null) {
+      const mailboxId = await this.resolveConversationMailboxId(input.conversationId);
+      if (!isWriteInboxAllowed(mailboxId)) {
+        return this.buildInboxNotAllowedResult(mailboxId);
+      }
+    }
+
     const updatedFields: string[] = [];
     const convId = input.conversationId;
 
@@ -2217,6 +2276,16 @@ export class ToolHandler {
   private async createReply(args: unknown): Promise<CallToolResult> {
     const input = CreateReplyInputSchema.parse(args);
 
+    // Enforce write inbox allowlist (if configured). When unset, this is
+    // a no-op; when set, we resolve the conversation's mailbox before
+    // letting the write proceed.
+    if (getWriteInboxAllowlist() !== null) {
+      const mailboxId = await this.resolveConversationMailboxId(input.conversationId);
+      if (!isWriteInboxAllowed(mailboxId)) {
+        return this.buildInboxNotAllowedResult(mailboxId);
+      }
+    }
+
     const isDraft = input.draft !== false; // default true
 
     // Block published replies unless env var is set
@@ -2274,6 +2343,13 @@ export class ToolHandler {
    */
   private async createNote(args: unknown): Promise<CallToolResult> {
     const input = CreateNoteInputSchema.parse(args);
+
+    if (getWriteInboxAllowlist() !== null) {
+      const mailboxId = await this.resolveConversationMailboxId(input.conversationId);
+      if (!isWriteInboxAllowed(mailboxId)) {
+        return this.buildInboxNotAllowedResult(mailboxId);
+      }
+    }
 
     const text = this.formatReplyHtml(sanitizeReplyHtml(input.text), config.helpscout.replySpacing === 'compact');
 

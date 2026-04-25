@@ -180,4 +180,48 @@ describe('Config Validation', () => {
       expect(() => validateConfig()).toThrow(/too short/);
     });
   });
+
+  describe('write inbox allowlist', () => {
+    it('default-allows when HELPSCOUT_WRITE_INBOX_ALLOWLIST is unset', async () => {
+      delete process.env.HELPSCOUT_WRITE_INBOX_ALLOWLIST;
+      jest.resetModules();
+      const { isWriteInboxAllowed, getWriteInboxAllowlist } = await import('../utils/config.js');
+      expect(getWriteInboxAllowlist()).toBeNull();
+      expect(isWriteInboxAllowed('123')).toBe(true);
+      expect(isWriteInboxAllowed(456)).toBe(true);
+      expect(isWriteInboxAllowed(undefined)).toBe(true);
+    });
+
+    it('only allows listed mailbox IDs when set', async () => {
+      process.env.HELPSCOUT_WRITE_INBOX_ALLOWLIST = '123, 456 ,789';
+      jest.resetModules();
+      const { isWriteInboxAllowed, getWriteInboxAllowlist } = await import('../utils/config.js');
+      expect(getWriteInboxAllowlist()).toEqual(['123', '456', '789']);
+      expect(isWriteInboxAllowed('123')).toBe(true);
+      expect(isWriteInboxAllowed(456)).toBe(true);
+      expect(isWriteInboxAllowed('999')).toBe(false);
+      expect(isWriteInboxAllowed(undefined)).toBe(false);
+    });
+  });
+
+  describe('write docs site allowlist', () => {
+    it('default-allows when HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST is unset', async () => {
+      delete process.env.HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST;
+      jest.resetModules();
+      const { isWriteDocsSiteAllowed, getWriteDocsSiteAllowlist } = await import('../utils/config.js');
+      expect(getWriteDocsSiteAllowlist()).toBeNull();
+      expect(isWriteDocsSiteAllowed('site-1')).toBe(true);
+      expect(isWriteDocsSiteAllowed(undefined)).toBe(true);
+    });
+
+    it('only allows listed site IDs when set', async () => {
+      process.env.HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST = 'site-a,site-b';
+      jest.resetModules();
+      const { isWriteDocsSiteAllowed, getWriteDocsSiteAllowlist } = await import('../utils/config.js');
+      expect(getWriteDocsSiteAllowlist()).toEqual(['site-a', 'site-b']);
+      expect(isWriteDocsSiteAllowed('site-a')).toBe(true);
+      expect(isWriteDocsSiteAllowed('site-c')).toBe(false);
+      expect(isWriteDocsSiteAllowed(undefined)).toBe(false);
+    });
+  });
 });

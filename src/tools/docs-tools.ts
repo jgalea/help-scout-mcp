@@ -2,7 +2,7 @@ import { Tool, CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk
 import { DocsPaginatedResponse } from '../utils/helpscout-docs-client.js';
 import { createMcpToolError } from '../utils/mcp-errors.js';
 import { Injectable, ServiceContainer } from '../utils/service-container.js';
-import { isVerbose } from '../utils/config.js';
+import { isVerbose, isWriteDocsSiteAllowed, getWriteDocsSiteAllowlist } from '../utils/config.js';
 import { sanitizeDocsHtml } from '../utils/html-sanitize.js';
 import { compactTool } from './tool-utils.js';
 import { z } from 'zod';
@@ -104,6 +104,60 @@ const DOCS_TOOL_DESCRIPTIONS: Record<string, string> = {
 export class DocsToolHandler extends Injectable {
   constructor(container?: ServiceContainer) {
     super(container);
+  }
+
+  /**
+   * Build a CallToolResult that explains the Docs site allowlist
+   * rejection to the LLM. Used by docs write tools.
+   */
+  private buildDocsSiteNotAllowedResult(siteId: string | number | undefined | null): CallToolResult {
+    const allowlist = getWriteDocsSiteAllowlist();
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          error: 'Docs site not in write allowlist',
+          message:
+            `Docs write operations are restricted to site IDs in HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST. ` +
+            `Target site ${siteId === undefined || siteId === null ? '(unknown)' : siteId} is not allowed.`,
+          allowedSiteIds: allowlist,
+          suggestion:
+            'Either choose a target in an allowed site, or update HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST.',
+        }),
+      }],
+      isError: true,
+    };
+  }
+
+  /**
+   * Resolve the siteId for a given collectionId. Used by docs write
+   * tools to enforce HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST. Returns null
+   * on lookup failure — caller treats null as "unable to verify".
+   */
+  private async resolveCollectionSiteId(collectionId: string): Promise<string | null> {
+    try {
+      const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+      const collection = await helpScoutDocsClient.get<DocsCollection>(`/collections/${collectionId}`);
+      return (collection as any).siteId ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve the siteId for a given articleId by fetching the article
+   * (which carries collectionId), then resolving that to a site.
+   */
+  private async resolveArticleSiteId(articleId: string): Promise<string | null> {
+    try {
+      const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
+      const article = await helpScoutDocsClient.get<DocsArticle>(`/articles/${articleId}`);
+      const collectionId = (article as any).collectionId;
+      if (!collectionId) return null;
+      return this.resolveCollectionSiteId(collectionId);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1409,8 +1463,16 @@ export class DocsToolHandler extends Injectable {
 
   private async updateDocsArticle(args: unknown): Promise<CallToolResult> {
     const input = UpdateDocsArticleInputSchema.parse(args);
+
+    if (getWriteDocsSiteAllowlist() !== null) {
+      const siteId = await this.resolveArticleSiteId(input.articleId);
+      if (!isWriteDocsSiteAllowed(siteId)) {
+        return this.buildDocsSiteNotAllowedResult(siteId);
+      }
+    }
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     // Build update payload
     const updateData: Record<string, unknown> = {};
     if (input.name !== undefined) updateData.name = input.name;
@@ -2042,9 +2104,16 @@ export class DocsToolHandler extends Injectable {
       slug: z.string().optional(),
       tags: z.array(z.string()).optional(),
     }).parse(args);
-    
+
+    if (getWriteDocsSiteAllowlist() !== null) {
+      const siteId = await this.resolveCollectionSiteId(input.collectionId);
+      if (!isWriteDocsSiteAllowed(siteId)) {
+        return this.buildDocsSiteNotAllowedResult(siteId);
+      }
+    }
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     try {
       const articleData: any = {
         collectionId: input.collectionId,
@@ -2515,9 +2584,16 @@ export class DocsToolHandler extends Injectable {
       text: z.string(),
       name: z.string().optional(),
     }).parse(args);
-    
+
+    if (getWriteDocsSiteAllowlist() !== null) {
+      const siteId = await this.resolveArticleSiteId(input.articleId);
+      if (!isWriteDocsSiteAllowed(siteId)) {
+        return this.buildDocsSiteNotAllowedResult(siteId);
+      }
+    }
+
     const { helpScoutDocsClient } = this.services.resolve(['helpScoutDocsClient']);
-    
+
     try {
       const draftData: any = {
         text: collapseBlockWhitespace(sanitizeDocsHtml(input.text)),
