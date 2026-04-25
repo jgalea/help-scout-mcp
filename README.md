@@ -1,842 +1,208 @@
-# Help Scout MCP Server
+# Help Scout MCP Server (hardened fork)
 
-[![npm version](https://badge.fury.io/js/@gravitykit%2Fhelp-scout-mcp.svg)](https://www.npmjs.com/package/@gravitykit/help-scout-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://typescriptlang.org/)
 
-> **Help Scout MCP Server** - Connect Claude and other AI assistants to your Help Scout data with enterprise-grade security and advanced search capabilities.
+An MCP server that exposes [Help Scout](https://www.helpscout.com/) to AI assistants — search conversations, fetch transcripts, manage Docs articles, pull reports.
 
-> **Note**: This is a fork of the original [help-scout-mcp](https://github.com/drewburchfield/help-scout-mcp) by Drew Burchfield.
+This is a **security-hardened private fork** of [`GravityKit/help-scout-mcp`](https://github.com/GravityKit/help-scout-mcp) (which itself forks [`drewburchfield/help-scout-mcp-server`](https://github.com/drewburchfield/help-scout-mcp-server)). The original maintainers wrote the bulk of the code; this fork applies fixes for a private security audit dated 2026-04-25 and switches several defaults to fail-closed.
 
-## 📖 Table of Contents
+Headline differences from upstream are listed in [SECURITY.md](./SECURITY.md). If you want the original, use `@gravitykit/help-scout-mcp` from npm.
 
-- [🎉 What's New](#-whats-new)
-- [⚡ Quick Start](#quick-start)
-- [🔑 API Credentials](#getting-your-api-credentials)
-- [🛠️ Tools & Capabilities](#tools--capabilities)
-- [📋 Response Modes](#response-modes)
-- [⚙️ Configuration](#configuration-options)
-- [🔍 Troubleshooting](#troubleshooting)
-- [🤝 Contributing](#contributing)
+## Quick start
 
-## 🎉 What's New
+### Prerequisites
 
-- **📚 Full Docs API Integration**: Complete support for Help Scout Docs API
-  - Browse and search documentation sites, collections, categories, and articles
-  - Read full article content with PII protection
-  - Update articles, collections, and categories (with safety controls)
-- **📈 Complete Reports API**: All Help Scout Reports endpoints implemented
-  - Conversation reports (chat, email, phone) with detailed metrics
-  - User/team performance reports with productivity analytics
-  - Company-wide reports with customer and team insights
-  - Happiness reports with satisfaction scores and feedback
-  - Docs analytics with article views and visitor metrics
-- **🎯 MCPB Extension**: One-click installation for Claude Desktop
-- **🔧 Clear Environment Variables**: `HELPSCOUT_APP_ID` and `HELPSCOUT_APP_SECRET`
-- **⚡ Connection Pooling**: Improved performance with HTTP connection reuse
-- **🛡️ Enhanced Security**: Comprehensive input validation and API constraints
-- **🔄 Dependency Injection**: Cleaner architecture with ServiceContainer
-- **🧪 Comprehensive Testing**: 69%+ branch coverage with reliable tests
+- Node.js 18+
+- A Help Scout account and a [Custom App](https://secure.helpscout.net/users/profile/apps) with **Read** scope on Mailbox + Customers + Reports (and write scopes only if you intend to use write tools)
+- macOS Keychain or another secret manager (recommended), or env vars (acceptable for local development)
 
-## Prerequisites
-
-- **Node.js 18+** (for command line usage)
-- **Help Scout Account** with API access
-- **OAuth2 App** from Help Scout (Personal Access Tokens are no longer supported)
-- **Claude Code**, **Claude Desktop**, or any MCP-compatible client
-
-> **Note**: The MCPB extension bundles all dependencies, so no local Node.js installation needed for Claude Desktop users.
-
-## Quick Start
-
-### ⚡ Option 1: Claude Code (Easiest)
-
-The fastest way to get started — just ask Claude to install it:
-
-```
-claude "Install the @gravitykit/help-scout-mcp MCP server"
-```
-
-Claude Code will add it to your project's `.mcp.json` automatically. When prompted, provide your Help Scout App ID and App Secret.
-
-You can also add it manually:
+### Install (Claude Code)
 
 ```bash
-claude mcp add helpscout -- npx @gravitykit/help-scout-mcp
+git clone https://github.com/jgalea/help-scout-mcp.git
+cd help-scout-mcp
+npm install && npm run build
 ```
 
-Then set your credentials in `.mcp.json`:
+Then add to `.mcp.json` in your project:
 
 ```json
 {
   "mcpServers": {
     "helpscout": {
-      "command": "npx",
-      "args": ["@gravitykit/help-scout-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/help-scout-mcp/dist/index.js"],
       "env": {
-        "HELPSCOUT_APP_ID": "your-app-id",
-        "HELPSCOUT_APP_SECRET": "your-app-secret"
+        "HELPSCOUT_APP_ID": "...",
+        "HELPSCOUT_APP_SECRET": "...",
+        "HELPSCOUT_WRITE_INBOX_ALLOWLIST": "12345,67890"
       }
     }
   }
 }
 ```
 
-### 🎯 Option 2: Claude Desktop (MCPB One-Click Install)
+> **Default-deny:** if `HELPSCOUT_WRITE_INBOX_ALLOWLIST` is unset, every write tool returns an error. List the mailbox IDs you want the agent to write to.
 
-**Easiest setup using [MCP Bundles](https://docs.anthropic.com/en/docs/build-with-claude/computer-use#desktop-extensions) - no configuration needed:**
+### Credential storage
 
-1. Download the latest [`.mcpb` file from releases](https://github.com/GravityKit/help-scout-mcp/releases)
-2. Double-click to install in Claude Desktop
-3. Enter your Help Scout App ID and App Secret when prompted
-4. Start using immediately!
+The MCP reads credentials from environment variables. Three patterns, listed best to worst:
 
-### 📋 Option 3: Claude Desktop (Manual Config)
+**1. Keychain via launcher (recommended on macOS)**
+
+```bash
+# One-time: store in Keychain
+security add-generic-password -s claude-helpscout-app-id -w 'YOUR_APP_ID' -U
+security add-generic-password -s claude-helpscout-app-secret -w 'YOUR_APP_SECRET' -U
+```
+
+Then create a launcher that reads from Keychain at startup:
+
+```bash
+#!/bin/bash
+# launcher.sh
+export HELPSCOUT_APP_ID="$(security find-generic-password -s claude-helpscout-app-id -w)"
+export HELPSCOUT_APP_SECRET="$(security find-generic-password -s claude-helpscout-app-secret -w)"
+exec node /absolute/path/to/help-scout-mcp/dist/index.js
+```
+
+Reference the launcher in `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "helpscout": {
-      "command": "npx",
-      "args": ["@gravitykit/help-scout-mcp"],
+      "command": "/absolute/path/to/launcher.sh",
       "env": {
-        "HELPSCOUT_APP_ID": "your-app-id",
-        "HELPSCOUT_APP_SECRET": "your-app-secret"
+        "HELPSCOUT_WRITE_INBOX_ALLOWLIST": "12345,67890"
       }
     }
   }
 }
 ```
 
-### 💻 Option 4: Command Line
-
-```bash
-HELPSCOUT_APP_ID="your-app-id" \
-HELPSCOUT_APP_SECRET="your-app-secret" \
-npx @gravitykit/help-scout-mcp
-```
-
-## Getting Your API Credentials
-
-### 🎯 **Recommended: OAuth2 Client Credentials (Step-by-Step)**
-
-This method is recommended for production use and provides automatic token refresh.
-
-**Why Client Credentials?** MCP servers are backend applications that run without user interaction. We use the Client Credentials flow (not Authorization Code flow) because:
-- ✅ No browser or user login required
-- ✅ Perfect for server-to-server authentication
-- ✅ Automatic token refresh
-- ✅ Works with Claude Desktop, Continue.dev, etc.
-
-#### Step 1: Create a Private App
-1. Log in to your Help Scout account
-2. Click your profile icon (top right) → **My Apps**
-3. Click **Create My App**
-4. Fill out the form:
-   - **App Name**: e.g., "Help Scout MCP Server"
-   - **Redirection URL**: Use `https://example.com` (required field but not used for server apps)
-   - **Description**: Optional description of your integration
-
-#### Step 2: Configure App Permissions
-Select the scopes your app needs:
-- ✅ **Mailbox** - Read conversations, threads, and mailbox data
-- ✅ **Customers** - Access customer information
-- ✅ **Reports** - Access analytics and reporting (Plus/Pro plans only)
-- ✅ **Users** - Read user information
-- ✅ **Webhooks** - If you need webhook functionality
-
-**Note**: Only select the scopes you actually need for security best practices.
-
-#### Step 3: Save and Get Credentials
-1. Click **Create Application**
-2. You'll see your credentials:
-   - **App ID** (this is your Client ID)
-   - **App Secret** (this is your Client Secret)
-3. **⚠️ Important**: Copy these immediately! The App Secret is only shown once.
-
-#### Step 4: Configure the MCP Server
-Set these environment variables:
-```bash
-export HELPSCOUT_APP_ID="your-app-id-here"
-export HELPSCOUT_APP_SECRET="your-app-secret-here"
-```
-
-Or add to your `.env` file:
-```env
-HELPSCOUT_APP_ID=your-app-id-here
-HELPSCOUT_APP_SECRET=your-app-secret-here
-```
-
-#### Step 5: Test Your Configuration
-```bash
-# Test with environment variables
-HELPSCOUT_APP_ID="your-app-id" \
-HELPSCOUT_APP_SECRET="your-app-secret" \
-npx @gravitykit/help-scout-mcp
-
-# Or if using .env file
-npx @gravitykit/help-scout-mcp
-```
-
-#### Troubleshooting OAuth Issues
-- **"Unknown URL" for Reports**: Ensure your account has a Plus/Pro plan
-- **Authentication Failed**: Double-check your App ID and App Secret
-- **Missing Scopes**: Go back to My Apps and edit your app's permissions
-- **Token Expired**: The server handles refresh automatically
-
-### 📚 **For Docs API Access**
-
-1. Go to **[Help Scout Docs Settings](https://secure.helpscout.net/settings/docs/code)**
-2. Generate a **Docs API Key**
-3. Use in configuration: `HELPSCOUT_DOCS_API_KEY=your-docs-api-key`
-
-**Important Notes:**
-- The Docs API key is separate from your main Help Scout API credentials
-- Ensure Help Scout Docs is enabled for your account
-- You must have at least one Docs site created to access documentation
-- Reports API (for analytics) requires Plus/Pro plan
-
-## Features
-
-- **🔍 Advanced Search**: Multi-status conversation search, content filtering, boolean queries
-- **💬 Reply Creation**: Draft or published replies with HTML formatting optimized for Help Scout
-- **📊 Smart Analysis**: Conversation summaries, thread retrieval, inbox monitoring
-- **📚 Docs Integration**: Full Help Scout Docs API support for articles, collections, and categories
-- **📈 Comprehensive Reports**: All Help Scout Reports API endpoints - chat, email, phone, user, company, happiness, and docs analytics
-- **🔒 Enterprise Security**: PII redaction, secure token handling, comprehensive audit logs
-- **⚡ High Performance**: Built-in caching, rate limiting, automatic retry logic
-- **🎯 Easy Integration**: Works with Claude Desktop, Cursor, Continue.dev, and more
-
-## Tools & Capabilities
-
-### Conversation Tools
-
-| Tool | Description | Best For |
-|------|-------------|----------|
-| `searchConversations` | Search by keywords, structured filters, or list by status/date/inbox. Supports `includeTranscripts` for inline message content. | Listing, keyword search, content search, summarization |
-| `structuredConversationFilter` | Lookup by ticket number, assignee, customer ID, or folder ID | Ticket lookup, assignee filtering |
-| `getConversationSummary` | First customer message + latest staff reply | Quick conversation overview |
-| `getThreads` | Full message history with optional `transcript` format. Excludes AI drafts by default (`excludeDrafts: true`). | Full context analysis |
-| `getAttachment` | Download a conversation attachment to a temp file | Inspecting uploaded files |
-| `searchInboxes` | List inboxes or filter them by name | Discovering available inboxes |
-| `createReply` | Create a draft or published reply on a conversation | Replying to customers |
-| `createNote` | Create an internal note on a conversation | Internal triage and handoff |
-| `getConversation` | Get a conversation by ID with optional embedded threads | Direct conversation lookup |
-| `createConversation` | Create a new conversation with subject, customer, and initial message | Starting new tickets |
-| `updateConversation` | Update a conversation's status, assignee, tags, or subject | Triaging and managing tickets |
-| `getServerTime` | Current server timestamp | Time-relative searches |
-
-### Documentation Tools
-
-> Set `HELPSCOUT_DISABLE_DOCS=true` to hide all Docs tools if you don't use Help Scout Docs.
-
-| Tool | Description | Use Case |
-|------|-------------|----------|
-| `listDocsSites` | List all documentation sites with NLP filtering | Discover available sites |
-| `listDocsCollections` | List collections with site NLP resolution | Browse documentation structure |
-| `getSiteCollections` | Get collections for a specific site using NLP | Find site-specific collections |
-| `listDocsCategories` | List categories in a collection | Navigate collection organization |
-| `getDocsEntity` | Get a specific site, collection, or category by type and ID | Entity details |
-| `listDocsArticles` | List articles in a collection or category | Find articles by location |
-| `searchDocsArticles` | Search articles by keyword across sites/collections | Content search |
-| `getDocsArticle` | Get full article content | Read complete documentation |
-| `listRelatedDocsArticles` | Get articles related to a given article | Content discovery |
-| `updateDocsViewCount` | Update the view count for an article | Analytics tracking |
-| `createDocsArticle` | Create a new article | Content creation |
-| `updateDocsArticle` | Update article content/properties | Modify documentation |
-| `deleteDocsArticle` | Delete an article (requires `HELPSCOUT_ALLOW_DOCS_DELETE=true`) | Content management |
-| `uploadDocsArticle` | Upload an article from a file | Bulk content import |
-| `createDocsCategory` | Create a new category in a collection | Organize documentation |
-| `updateDocsEntity` | Update a collection or category | Manage docs structure |
-| `updateDocsCategoryOrder` | Reorder categories within a collection | Organize documentation |
-| `deleteDocsCategory` | Delete a category | Content management |
-| `createDocsCollection` | Create a new collection on a site | Organize documentation |
-| `deleteDocsCollection` | Delete a collection | Content management |
-| `listDocsArticleRevisions` | List revisions for an article | Version history |
-| `getDocsArticleRevision` | Get a specific article revision | Version comparison |
-| `saveDocsArticleDraft` | Save an article draft | Drafting content |
-| `deleteDocsArticleDraft` | Delete an article draft | Draft management |
-| `listDocsRedirects` | List URL redirects for a site | Redirect management |
-| `getDocsRedirect` / `findDocsRedirect` | Get or find a redirect | Redirect lookup |
-| `createDocsRedirect` / `updateDocsRedirect` / `deleteDocsRedirect` | Manage redirects | URL management |
-| `createDocsSite` / `updateDocsSite` / `deleteDocsSite` | Manage Docs sites | Site management |
-| `getDocsSiteRestrictions` / `updateDocsSiteRestrictions` | Manage site access restrictions | Access control |
-| `createDocsArticleAsset` / `createDocsSettingsAsset` | Upload assets (images, files) | Asset management |
-
-### Reports & Analytics Tools
-
-| Tool | Description | Requirements |
-|------|-------------|-------------|
-| `getTopArticles` | Get top most viewed docs articles sorted by popularity | Works with all plans |
-| `getReport` | Get chat, email, phone, user, company, happiness, or docs reports by `type` | Plus/Pro plan required |
-| `getHappinessRatings` | Individual happiness ratings with conversation details | Plus/Pro plan required |
-
-### Resources
-
-#### Conversations
-- `helpscout://inboxes` - List all accessible inboxes
-- `helpscout://conversations` - Search conversations with filters
-- `helpscout://threads` - Get thread messages for a conversation
-- `helpscout://clock` - Current server timestamp
-
-#### Documentation
-- `helpscout-docs://sites` - List all documentation sites
-- `helpscout-docs://collections` - List collections with filtering
-- `helpscout-docs://categories` - List categories in a collection
-- `helpscout-docs://articles` - Get articles with full content
-
-## Search Examples
-
-> **Tip**: `searchConversations` handles listing, keyword search, and structured search — use different parameters for different needs.
-
-### Listing Recent Conversations
-```javascript
-// Best for "show me recent tickets" - omit query parameter
-searchConversations({
-  limit: 25,
-  sort: "createdAt",
-  order: "desc"
-})
-```
-
-### Content-Based Search
-```javascript
-// Best for "find tickets about X" - uses keyword search
-searchConversations({
-  searchTerms: ["urgent", "billing"],
-  timeframeDays: 60,
-  inboxId: "256809"
-})
-```
-
-### Content-Specific Searches
-```javascript
-// Search in message bodies and subjects
-searchConversations({
-  searchTerms: ["refund", "cancellation"],
-  searchIn: ["both"],
-  timeframeDays: 30
-})
-
-// Customer organization search (structured fields)
-searchConversations({
-  emailDomain: "company.com",
-  contentTerms: ["integration", "API"],
-  status: "active"
-})
-```
-
-### Help Scout Query Syntax
-```javascript
-// Advanced query syntax support
-searchConversations({
-  query: "(body:\"urgent\" OR subject:\"emergency\") AND tag:\"escalated\"",
-  status: "active"
-})
-```
-
-### Documentation Examples
-```javascript
-// List all documentation sites
-listDocsSites({
-  page: 1
-})
-
-// Get articles in a collection
-listDocsArticles({
-  collectionId: "123456",
-  status: "published",
-  sort: "popularity"
-})
-
-// Get full article content
-getDocsArticle({
-  articleId: "789012"
-})
-
-// Update an article
-updateDocsArticle({
-  articleId: "789012",
-  name: "Updated Article Title",
-  text: "<p>New article content</p>"
-})
-```
-
-### Creating Replies
-```javascript
-// Create a draft reply (default, safe)
-createReply({
-  conversationId: "98234",
-  text: "<p>Thanks for reaching out! Let me look into this.</p>",
-  customer: { email: "maria@example.com" }
-})
-
-// Create a published reply (requires HELPSCOUT_ALLOW_SEND_REPLY=true)
-createReply({
-  conversationId: "98234",
-  text: "<p>Your export issue has been resolved.</p>",
-  customer: { id: 67890 },
-  draft: false,
-  status: "closed"
-})
-```
-
-HTML in replies is automatically formatted for Help Scout's native editor:
-- `<p>` tags converted to `<br><br>` line breaks
-- `<pre>` blocks converted to `<div>` (Help Scout strips `<pre>`)
-- `<code>` tags get `class="inline-code"` for styling
-- Block element spacing controlled by `HELPSCOUT_REPLY_SPACING`
-
-### Managing Conversations
-```javascript
-// Get a conversation by ID
-getConversation({
-  conversationId: "98234"
-})
-
-// Get a conversation with embedded threads
-getConversation({
-  conversationId: "98234",
-  embed: ["threads"]
-})
-
-// Create a new conversation
-createConversation({
-  subject: "New support request",
-  type: "email",
-  mailboxId: 256809,
-  customer: { email: "maria@example.com" },
-  threads: [{ type: "customer", text: "I need help with my account." }]
-})
-
-// Update a conversation's status and tags
-updateConversation({
-  conversationId: "98234",
-  status: "pending",
-  tags: ["billing", "priority"]
-})
-
-// Reassign a conversation
-updateConversation({
-  conversationId: "98234",
-  assignTo: 12345
-})
-```
-
-### Summarizing Tickets with Transcripts
-```javascript
-// Single call: get latest tickets with full message transcripts
-searchConversations({
-  includeTranscripts: true,
-  limit: 10
-})
-
-// Search with transcripts for AI analysis
-searchConversations({
-  searchTerms: ["billing", "refund"],
-  includeTranscripts: true,
-  transcriptMaxMessages: 5
-})
-```
-
-### Reports Examples
-```javascript
-// Get email conversation report with comparison
-getReport({
-  type: "email",
-  start: "2024-01-01T00:00:00Z",
-  end: "2024-01-31T23:59:59Z",
-  previousStart: "2023-12-01T00:00:00Z",
-  previousEnd: "2023-12-31T23:59:59Z",
-  mailboxes: ["123456"],
-  viewBy: "week"
-})
-
-// Get user performance report
-getReport({
-  type: "user",
-  start: "2024-01-01T00:00:00Z",
-  end: "2024-01-31T23:59:59Z",
-  user: "789012",
-  types: ["email", "chat"],
-  officeHours: true
-})
-
-// Get happiness report with filters
-getReport({
-  type: "happiness",
-  start: "2024-01-01T00:00:00Z",
-  end: "2024-01-31T23:59:59Z",
-  rating: ["great", "ok"],
-  mailboxes: ["123456"],
-  viewBy: "day"
-})
-
-// Get company-wide analytics
-getReport({
-  type: "company",
-  start: "2024-01-01T00:00:00Z",
-  end: "2024-01-31T23:59:59Z",
-  viewBy: "month"
-})
-```
-
-## Response Modes
-
-The server provides three response modes to optimize token usage and support different use cases.
-
-### Slim (default)
-
-Every conversation and thread is stripped to just the fields that matter: id, number, subject, status, preview, assignee, customer, tags, and dates. All Help Scout API cruft (`_links`, `_embedded`, `closedByUser`, source metadata, tag styles, photo URLs, etc.) is removed automatically.
-
-```json
-{
-  "id": 98234,
-  "number": 14052,
-  "subject": "Can't export to CSV",
-  "status": "active",
-  "preview": "When I click Export, nothing happens...",
-  "assignee": { "first": "Rafael", "last": "Smith" },
-  "customer": { "first": "Maria", "last": "Garcia", "email": "maria@example.com" },
-  "tags": ["tech-support"],
-  "createdAt": "2026-02-14T10:30:00Z"
-}
-```
-
-### Verbose (`verbose: true`)
-
-Returns the full, raw Help Scout API response objects. Useful for debugging or when you need a specific field that slim mode strips out. This behavior is still supported, but `verbose` is no longer advertised in tool schemas; the default public surface stays slim.
-
-```json
-{
-  "id": 98234,
-  "number": 14052,
-  "subject": "Can't export to CSV",
-  "status": "active",
-  "state": "published",
-  "type": "email",
-  "preview": "When I click Export, nothing happens...",
-  "mailboxId": 256809,
-  "assignee": { "id": 12345, "first": "Rafael", "last": "Smith", "email": "rafael@company.com" },
-  "createdBy": { "id": 67890, "type": "customer" },
-  "customer": { "id": 67890, "first": "Maria", "last": "Garcia", "email": "maria@example.com" },
-  "tags": [{ "id": 13974028, "name": "tech-support", "color": "#929292" }],
-  "closedBy": null,
-  "closedByUser": null,
-  "source": { "type": "email", "via": "customer" },
-  "_links": { "self": { "href": "..." }, "threads": { "href": "..." }, "mailbox": { "href": "..." } },
-  "_embedded": { "threads": { "_links": { "..." } } }
-}
-```
-
-### Transcript
-
-Purpose-built for AI analysis and summarization. Available in two ways:
-
-- **Single conversation**: `getThreads` with `format: "transcript"`
-- **Batch with search**: `searchConversations` with `includeTranscripts: true`
-
-Transcripts:
-- Exclude AI-generated drafts (`source.type: "support-agent-ai"`) and unsent drafts (`state: "draft"`) by default. Set `excludeDrafts: false` on `getThreads` to include all threads.
-- Include only customer/staff messages (strips internal notes, line items, system events)
-- Sort chronologically (oldest first, natural reading order)
-- Strip all HTML to plain text
-- Clean up Help Scout Beacon form HTML (extracts the actual message from form markup)
-- Respect the `REDACT_MESSAGE_CONTENT` privacy setting
-- Cap message count per conversation (`transcriptMaxMessages`, default 10)
-
-#### Inline Transcripts on Search
-
-**Before** — summarizing 10 tickets required 11 API calls:
-
-```javascript
-// 1. Search for conversations
-const results = searchConversations({ limit: 10 })
-
-// 2. Fetch threads for each conversation individually
-for (const conversation of results) {
-  getThreads({ conversationId: conversation.id, format: "transcript" })
-}
-```
-
-**After** — a single call:
-
-```javascript
-searchConversations({ includeTranscripts: true, limit: 10 })
-```
-
-Returns conversations with inline transcript arrays:
-
-```json
-{
-  "results": [
-    {
-      "id": 98234,
-      "subject": "Can't export to CSV",
-      "status": "active",
-      "customer": { "first": "Maria" },
-      "transcript": [
-        { "role": "customer", "from": "Maria", "date": "...", "body": "When I click Export, nothing happens..." },
-        { "role": "staff", "from": "Rafael", "date": "...", "body": "Could you try disabling your browser extensions?" }
-      ]
-    }
-  ],
-  "includeTranscripts": true,
-  "transcriptMaxMessages": 10
-}
-```
-
-**Design notes:**
-- When `includeTranscripts` is true and no limit is specified, defaults to 10 conversations (not 50)
-- Thread requests fire concurrently via `Promise.allSettled` — one failed transcript doesn't break the response
-- If a transcript fetch fails, the conversation still appears with `transcript: null` and a `transcriptError` field
-- The transcript format is identical whether fetched via `getThreads` or `searchConversations`
-
-## Configuration Options
+The MCP binary never sees a credential string in `args` or `argv`, and `.mcp.json` (which can be committed to a repo) holds no secrets.
+
+**2. Secret manager (Doppler / 1Password CLI / AWS Secrets Manager)**
+
+Use the same launcher pattern, replacing `security find-generic-password` with your secret manager's CLI.
+
+**3. Plain env vars or `.env` files**
+
+Acceptable for local development. **Do not** put credentials in:
+
+- `.claude/settings.local.json` (this is exactly how upstream's credentials leaked publicly)
+- Anything committed to git
+- Anything shipped to a remote log aggregator
+
+## Tools
+
+### Conversations
+
+| Tool | Description |
+|------|-------------|
+| `searchConversations` | Search by keywords, structured filters, status, date, inbox. Supports `includeTranscripts` for inline message content. |
+| `structuredConversationFilter` | Lookup by ticket number, assignee, customer ID, folder. |
+| `getConversationSummary` | First customer message + latest staff reply. |
+| `getThreads` | Full message history (excludes drafts by default). |
+| `getAttachment` | Download an attachment to a temp file (mode 0600). |
+| `searchInboxes` | List inboxes by name (or all). |
+| `createReply` | Write — drafts by default. Set `HELPSCOUT_ALLOW_SEND_REPLY=true` to allow published. Subject to `HELPSCOUT_WRITE_INBOX_ALLOWLIST`. |
+| `createNote` | Internal note. Subject to write allowlist. |
+| `getConversation` | Direct conversation lookup with optional embedded threads. |
+| `createConversation` | Open a new ticket. Subject to write allowlist. |
+| `updateConversation` | Change status / assignee / tags / subject. Subject to write allowlist. |
+| `getServerTime` | Current Help Scout server timestamp. |
+
+### Docs
+
+Set `HELPSCOUT_DISABLE_DOCS=true` to hide all Docs tools.
+
+| Tool | Description |
+|------|-------------|
+| `listDocsSites` | Browse all docs sites. |
+| `listDocsCollections` / `getSiteCollections` | Navigate collections. |
+| `listDocsCategories` / `listDocsArticles` / `searchDocsArticles` | Browse content. |
+| `getDocsArticle` / `listRelatedDocsArticles` | Read articles. |
+| `createDocsArticle` / `updateDocsArticle` / `uploadDocsArticle` | Write — subject to `HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST`. |
+| `deleteDocsArticle` | Requires `HELPSCOUT_ALLOW_DOCS_DELETE=true`. |
+| `createDocsCategory` / `updateDocsEntity` | Manage docs structure. |
+| `updateDocsViewCount` | Analytics tracking. |
+
+### Reports
+
+| Tool | Description |
+|------|-------------|
+| `getReport` | Unified entrypoint for conversation, user, company, happiness, and docs reports. Plus/Pro plan only. |
+
+## Configuration
+
+### Required
+
+| Variable | Description |
+|----------|-------------|
+| `HELPSCOUT_APP_ID` | OAuth2 App ID from Help Scout → My Apps. Min 24 chars (validated). |
+| `HELPSCOUT_APP_SECRET` | OAuth2 App Secret. Min 24 chars (validated). |
+
+### Write-tool authorization (default-deny)
+
+| Variable | Description |
+|----------|-------------|
+| `HELPSCOUT_WRITE_INBOX_ALLOWLIST` | **Required to enable any write tool.** Comma-separated mailbox IDs the agent may target with `createReply`, `createNote`, `createConversation`, `updateConversation`. Unset = all writes blocked. |
+| `HELPSCOUT_WRITE_DOCS_SITE_ALLOWLIST` | **Required to enable any Docs write tool.** Comma-separated Docs site IDs. Unset = all Docs writes blocked. |
+| `HELPSCOUT_ALLOW_SEND_REPLY` | Set to `true` to permit published (vs. draft) replies. Default `false`. |
+| `HELPSCOUT_ALLOW_DOCS_DELETE` | Set to `true` to permit `deleteDocsArticle`. Default `false`. |
+
+### Optional behavior
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| **Authentication** | | |
-| `HELPSCOUT_APP_ID` | OAuth2 App ID from Help Scout My Apps | Required |
-| `HELPSCOUT_APP_SECRET` | OAuth2 App Secret from Help Scout My Apps | Required |
-| **Core** | | |
-| `HELPSCOUT_BASE_URL` | Help Scout API endpoint | `https://api.helpscout.net/v2/` |
-| `HELPSCOUT_DEFAULT_INBOX_ID` | Default inbox ID for scoped searches | Optional |
-| `REDACT_MESSAGE_CONTENT` | Set `true` to hide message bodies in responses | `false` (content shown) |
-| `HELPSCOUT_VERBOSE_RESPONSES` | Set `true` to return full API objects by default | `false` (slim mode) |
-| `CACHE_TTL_SECONDS` | Cache duration for API responses | `300` |
-| `LOG_LEVEL` | Logging verbosity (`error`, `warn`, `info`, `debug`) | `info` |
-| **Replies** | | |
-| `HELPSCOUT_REPLY_SPACING` | Paragraph spacing around block elements in replies: `relaxed` (extra breathing room) or `compact` (tighter spacing) | `relaxed` |
-| `HELPSCOUT_ALLOW_SEND_REPLY` | Set `true` to allow sending published (non-draft) replies. When `false`, only drafts can be created. | `false` |
-| **Docs** | | |
-| `HELPSCOUT_DOCS_API_KEY` | API key for Help Scout Docs access | Required for Docs |
-| `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint | `https://docsapi.helpscout.net/v1/` |
-| `HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID` | Default collection ID for queries | Optional |
-| `HELPSCOUT_DEFAULT_DOCS_SITE_ID` | Default Docs site ID for queries | Optional |
-| `HELPSCOUT_ALLOW_DOCS_DELETE` | Enable Docs deletion operations | `false` |
-| `HELPSCOUT_DISABLE_DOCS` | Set `true` to hide all Docs tools and resources | `false` |
+| `HELPSCOUT_DEFAULT_INBOX_ID` | Default inbox for searches when none specified. | None |
+| `HELPSCOUT_BASE_URL` | Help Scout API endpoint. Validated against allowlist `api.helpscout.net` / `api.helpscout.com`. | `https://api.helpscout.net/v2/` |
+| `HELPSCOUT_DOCS_BASE_URL` | Help Scout Docs API endpoint. Validated against `docsapi.helpscout.net`. | `https://docsapi.helpscout.net/v1/` |
+| `HELPSCOUT_DOCS_API_KEY` | Separate Docs API key (set up in Help Scout Docs Settings, not the OAuth2 app). Required for Docs tools. | None |
+| `HELPSCOUT_DISABLE_DOCS` | Hide all Docs tools from the tool list. | `false` |
+| `HELPSCOUT_HIDE_INBOX_NAMES` | Emit inbox IDs only (not names) in MCP server instructions. Useful if your inbox names are sensitive. | `false` |
+| `REDACT_MESSAGE_CONTENT` | Hide message bodies in tool responses. | `false` |
+| `CACHE_TTL_SECONDS` | Cache TTL for API responses. | `300` |
+| `LOG_LEVEL` | `error`, `warn`, `info`, `debug`. **Do not use `debug` in environments that ship logs off-host** — it includes URL paths and IDs. | `info` |
+| `LOG_TOKEN_ROTATIONS` | Set to `true` to log timestamp + `expires_in` on each OAuth token rotation. Never logs the token itself. | `false` |
 
-## Smart Site & Collection Resolution
+## Security
 
-The MCP server includes intelligent natural language processing for Help Scout Docs sites and collections:
+This fork's security posture is documented in [SECURITY.md](./SECURITY.md). In short:
 
-### Natural Language Queries
-
-#### Collections
-```javascript
-// These all work to find GravityKit articles:
-listDocsCollections({ query: "GravityKit" })
-getSiteCollections({ query: "GravityKit" })
-searchDocsArticles({ query: "GravityKit help articles" })
-```
-
-#### Sites
-```javascript
-// Natural language site queries:
-listDocsCollections({ query: "GravityKit" })  // Find GravityKit site
-getSiteCollections({ query: "TrustedLogin site" })  // Get TrustedLogin collections
-listDocsSites({ query: "gravity" })  // Find sites matching "gravity"
-```
-
-### Matching Algorithm
-The system matches sites and collections using:
-1. **Direct name match** - Exact site/collection name (100% confidence)
-2. **Company/Site name match** - Company name like "GravityKit" (80-90% confidence)
-3. **Subdomain match** - Matches subdomain patterns (70-80% confidence)
-4. **CNAME match** - Custom domain matching (70% confidence)
-5. **Partial word match** - Intelligent fuzzy matching (variable confidence)
-
-### Default Configuration
-Set default site and collection for queries without specific context:
-```bash
-export HELPSCOUT_DEFAULT_DOCS_SITE_ID="your-site-id"
-export HELPSCOUT_DEFAULT_DOCS_COLLECTION_ID="your-collection-id"
-```
-
-### Discovery Tools
-- Use `listDocsSites` to see all Docs sites (with optional NLP filtering)
-- Use `getSiteCollections` to get collections for a specific site using NLP
-- Sites and collections are automatically cached for performance
-
-## Compatibility
-
-**Works with any [Model Context Protocol (MCP)](https://modelcontextprotocol.io) compatible client:**
-
-- **🖥️ Desktop Applications**: Claude Desktop, AI coding assistants, and other MCP-enabled desktop apps
-- **📝 Code Editors**: VS Code extensions, Cursor, and other editors with MCP support
-- **🔌 Custom Integrations**: Any application implementing the MCP standard
-- **🛠️ Development Tools**: Command-line MCP clients and custom automation scripts
-
-**Primary Platform**: [Claude Desktop](https://claude.ai/desktop) with full MCPB and manual configuration support
-
-*Since this server follows the MCP standard, it automatically works with any current or future MCP-compatible client.*
-
-## Security & Privacy
-
-- **🔒 PII Protection**: Optional message content redaction via `REDACT_MESSAGE_CONTENT`
-- **🛡️ Secure Authentication**: OAuth2 Client Credentials with automatic token refresh
-- **📝 Audit Logging**: Comprehensive request tracking and error logging
-- **⚡ Rate Limiting**: Built-in retry logic with exponential backoff
-
-## Changelog
-
-See [GitHub Releases](https://github.com/GravityKit/help-scout-mcp/releases) for version history and release notes.
+- HTML sanitization on all reply / note / docs write paths (`sanitize-html`)
+- PII redaction in tool-call argument logs at default `LOG_LEVEL=info`
+- Default-deny on write-tool authorization (per-mailbox, per-docs-site allowlists)
+- Hostname allowlist on Help Scout API endpoints
+- Path traversal hardening on `getAttachment`
+- Whitelisted upstream API error fields (no verbatim error-body leaks to LLM)
+- CSPRNG for request IDs, mode `0600` on attachment files
+- Token zeroed on shutdown
+- Dependency vulns patched (axios bumped to fix two SSRF advisories)
+- `.claude/`, `dist/`, `.env*`, `claude-desktop-config.json` are gitignored
 
 ## Development
 
 ```bash
-# Quick start
-git clone https://github.com/GravityKit/help-scout-mcp.git
-cd help-scout-mcp
-npm install && npm run build
-
-# Create .env file with your credentials (OAuth2)
-echo "HELPSCOUT_APP_ID=your-app-id" > .env
-echo "HELPSCOUT_APP_SECRET=your-app-secret" >> .env
-
-# Start the server
-npm start
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**Authentication Failed**
-```bash
-# Verify your credentials
-echo $HELPSCOUT_APP_ID
-echo $HELPSCOUT_APP_SECRET
-
-# Test with curl
-curl -X POST https://api.helpscout.net/v2/oauth2/token \
-  -d "grant_type=client_credentials&client_id=$HELPSCOUT_APP_ID&client_secret=$HELPSCOUT_APP_SECRET"
-```
-
-**Connection Timeouts**
-- Check your network connection to `api.helpscout.net`
-- Verify no firewall blocking HTTPS traffic
-- Consider increasing `HTTP_SOCKET_TIMEOUT` environment variable
-
-**Rate Limiting**
-- The server automatically handles rate limits with exponential backoff
-- Reduce concurrent requests if you see frequent 429 errors
-- Monitor logs for retry patterns
-
-**Empty Search Results**
-- Use `searchConversations` without `searchTerms` for listing, with `searchTerms` for keyword search
-- Don't use empty strings `[""]` in `searchTerms`
-- Verify inbox permissions with your API credentials
-- Check conversation exists and you have access
-- Try broader search terms or different time ranges
-
-### Reports API "Unknown URL" Errors
-
-If you're getting "Unknown URL" errors when accessing reports:
-
-**1. Verify Your Plan**
-- Reports API requires a **Plus** or **Pro** plan
-- Standard plan users can purchase Reports as an add-on
-- Check your plan: Help Scout → Manage → Account → Billing
-
-**2. Check OAuth App Permissions**
-- Go to **My Apps** → Edit your app
-- Ensure **Reports** scope is selected
-- Save and regenerate credentials if needed
-
-**3. Feature Availability**
-- **Happiness Reports**: Requires happiness ratings to be enabled
-  - Go to: Manage → Company → Email → Happiness Ratings
-- **Chat/Phone Reports**: Only available if these channels are enabled
-- **Docs Reports**: Requires Help Scout Docs to be enabled
-
-**4. API Response Debugging**
-```bash
-# Enable debug logging to see actual API responses
-LOG_LEVEL=debug npx @gravitykit/help-scout-mcp
-```
-
-### Debug Mode
-
-Enable debug logging to troubleshoot issues:
-
-```bash
-LOG_LEVEL=debug npx @gravitykit/help-scout-mcp
-```
-
-### Getting Help
-
-If you're still having issues:
-1. Check [existing issues](https://github.com/GravityKit/help-scout-mcp/issues)
-2. Enable debug logging and share relevant logs
-3. Include your configuration (without credentials!)
-
-## Contributing
-
-We welcome contributions! Here's how to get started:
-
-### 🚀 Quick Development Setup
-
-```bash
-git clone https://github.com/GravityKit/help-scout-mcp.git
+git clone https://github.com/jgalea/help-scout-mcp.git
 cd help-scout-mcp
 npm install
+npm run build      # build dist/
+npm test           # run all tests
+npm run type-check # TypeScript validation
+npm run lint       # ESLint
 ```
 
-### 🔧 Development Workflow
+The repo ships with a Semgrep config (`.semgrep.yml`) and a security-first Jest fixture set (no real customer data anywhere in `src/__tests__/`). New write tools or API integrations should add tests covering both the authorized and rejected paths.
 
-```bash
-# Run tests
-npm test
+## Reporting Bugs
 
-# Type checking
-npm run type-check
-
-# Linting
-npm run lint
-
-# Build for development
-npm run build
-
-# Start development server
-npm run dev
-```
-
-### 📋 Before Submitting
-
-- ✅ All tests pass (`npm test`)
-- ✅ Type checking passes (`npm run type-check`)
-- ✅ Linting passes (`npm run lint`)
-- ✅ Add tests for new features
-- ✅ Update documentation if needed
-
-### 🐛 Bug Reports
-
-When reporting bugs, please include:
-- Help Scout MCP Server version
-- Node.js version
-- Authentication method used
-- Error messages and logs
-- Steps to reproduce
-
-### 💡 Feature Requests
-
-We'd love to hear your ideas! Please open an issue describing:
-- The problem you're trying to solve
-- Your proposed solution
-- Any alternative approaches you've considered
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/GravityKit/help-scout-mcp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/GravityKit/help-scout-mcp/discussions)
-- **NPM Package**: [@gravitykit/help-scout-mcp](https://www.npmjs.com/package/@gravitykit/help-scout-mcp)
+- **Security issues**: please follow [SECURITY.md](./SECURITY.md) — do not file public GitHub issues.
+- **Functional bugs**: open a GitHub issue.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
----
-
-**Need help?** [Open an issue](https://github.com/GravityKit/help-scout-mcp/issues) or check our [documentation](https://github.com/GravityKit/help-scout-mcp/wiki).
+MIT — see [LICENSE](./LICENSE). Copyright on the original work belongs to the upstream maintainers (Drew Burchfield, GravityKit). Modifications in this fork are © 2026 Jean Galea, also under MIT.
