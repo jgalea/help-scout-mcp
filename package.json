@@ -25,6 +25,7 @@
     "test": "jest",
     "test:docker": "node test-docker.cjs",
     "test:docker:ci": "node test-docker-ci.cjs",
+    "smoke": "node scripts/smoke-test.js",
     "clean": "rimraf dist",
     "version:patch": "node scripts/bump-version.cjs patch",
     "version:minor": "node scripts/bump-version.cjs minor",
