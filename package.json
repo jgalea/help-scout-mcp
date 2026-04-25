@@ -1,7 +1,8 @@
 {
-  "name": "@gravitykit/help-scout-mcp",
+  "name": "@jgalea/help-scout-mcp",
   "version": "2.4.4",
-  "description": "Help Scout MCP server: search conversations, fetch transcripts, browse docs, and pull reports — all from Claude or any MCP client",
+  "private": true,
+  "description": "Help Scout MCP server (security-hardened private fork): search conversations, fetch transcripts, browse docs, and pull reports — all from Claude or any MCP client",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -31,6 +32,7 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build",
     "prepack": "npm run build",
+    "install-hooks": "bash scripts/install-hooks.sh",
     "mcpb:build": "node scripts/build-mcpb.js",
     "mcpb:pack": "npm run mcpb:build && cd helpscout-mcp-extension && npx @anthropic-ai/mcpb pack",
     "build:all": "npm run build && npm run mcpb:build"
@@ -49,17 +51,29 @@
     "nodejs"
   ],
   "author": {
-    "name": "Zack Katz",
-    "url": "https://github.com/zackkatz"
+    "name": "Jean Galea",
+    "url": "https://github.com/jgalea"
   },
+  "contributors": [
+    {
+      "name": "Drew Burchfield",
+      "url": "https://github.com/drewburchfield",
+      "comment": "Original author of help-scout-mcp-server"
+    },
+    {
+      "name": "Zack Katz",
+      "url": "https://github.com/zackkatz",
+      "comment": "Maintainer of GravityKit/help-scout-mcp fork"
+    }
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GravityKit/help-scout-mcp.git"
+    "url": "git+https://github.com/jgalea/help-scout-mcp.git"
   },
-  "homepage": "https://github.com/GravityKit/help-scout-mcp#readme",
+  "homepage": "https://github.com/jgalea/help-scout-mcp#readme",
   "bugs": {
-    "url": "https://github.com/GravityKit/help-scout-mcp/issues"
+    "url": "https://github.com/jgalea/help-scout-mcp/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
