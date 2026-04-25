@@ -15,14 +15,16 @@ export class ReportsApiClient {
     try {
       const response = await this.client.get<any>(endpoint, params);
       
-      // Log the raw response structure for debugging
+      // Log only response shape, never values — Reports API responses
+      // contain customer counts, agent emails, and rating comments that
+      // must not land in stderr. The previous responsePreview field
+      // serialized the whole object body.
       logger.debug('Reports API raw response', {
         endpoint,
         responseKeys: response ? Object.keys(response) : [],
         hasReport: response && typeof response === 'object' && 'report' in response,
         responseType: typeof response,
         isUnknownUrl: response === 'Unknown URL',
-        responsePreview: typeof response === 'object' ? JSON.stringify(response).substring(0, 200) : response
       });
 
       // Check for "Unknown URL" response (must check string type first)

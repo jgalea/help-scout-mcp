@@ -1,6 +1,7 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { Agent as HttpAgent } from 'http';
 import { Agent as HttpsAgent } from 'https';
+import crypto from 'crypto';
 
 interface RequestMetadata {
   requestId: string;
@@ -24,6 +25,18 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { cache } from './cache.js';
 import { ApiError } from '../schema/types.js';
+
+/**
+ * Drop the `?...` portion of a URL before logging. Help Scout query
+ * strings can include customer email, search terms, or query syntax
+ * like `query=email:"jane@bigcorp.com"` — none of which should land in
+ * stderr.
+ */
+function stripQueryString(url: string | undefined): string | undefined {
+  if (!url) return url;
+  const qIndex = url.indexOf('?');
+  return qIndex === -1 ? url : url.slice(0, qIndex);
+}
 
 /**
  * Whitelist the fields propagated from an upstream Help Scout error body
@@ -215,15 +228,17 @@ export class HelpScoutClient {
         config.headers.Authorization = `Bearer ${this.accessToken}`;
       }
       
-      const requestId = Math.random().toString(36).substring(7);
+      const requestId = crypto.randomBytes(8).toString('hex');
       config.metadata = { requestId, startTime: Date.now() };
-      
+
       logger.debug('API request', {
         requestId,
         method: config.method?.toUpperCase(),
-        url: config.url,
+        // Strip query strings — they often carry customer email,
+        // search terms, or other PII when an LLM is shaping a query.
+        url: stripQueryString(config.url),
       });
-      
+
       return config;
     });
 
@@ -304,7 +319,7 @@ export class HelpScoutClient {
 
   private transformError(error: AxiosError): ApiError {
     const requestId = error.config?.metadata?.requestId || 'unknown';
-    const url = error.config?.url;
+    const url = stripQueryString(error.config?.url);
     const method = error.config?.method?.toUpperCase();
 
     // Log internal details but don't expose in API response

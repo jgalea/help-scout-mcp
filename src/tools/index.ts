@@ -10,6 +10,7 @@ import { logger, redactArgs } from '../utils/logger.js';
 import { config, isVerbose } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
 import { z } from 'zod';
+import crypto from 'crypto';
 import TurndownService from 'turndown';
 import { detectMimeType, extForMime, isImageMime } from '../utils/mime.js';
 import { sanitizeReplyHtml } from '../utils/html-sanitize.js';
@@ -779,7 +780,10 @@ export class ToolHandler {
   }
 
   async callTool(request: CallToolRequest): Promise<CallToolResult> {
-    const requestId = Math.random().toString(36).substring(7);
+    // CSPRNG instead of Math.random() — request IDs are only used for
+    // log correlation today, but if they ever get repurposed as auth or
+    // dedup keys, predictability becomes a problem.
+    const requestId = crypto.randomBytes(8).toString('hex');
     const startTime = Date.now();
 
     logger.info('Tool call started', {

@@ -1,11 +1,23 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosError } from 'axios';
 import { Agent as HttpAgent } from 'http';
 import { Agent as HttpsAgent } from 'https';
+import crypto from 'crypto';
 import FormData from 'form-data';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { cache } from './cache.js';
 import { ApiError } from '../schema/types.js';
+
+/**
+ * Drop the `?...` portion of a URL before logging. See
+ * helpscout-client.ts for context — Docs queries can include search
+ * terms or article IDs that we don't want in stderr.
+ */
+function stripQueryString(url: string | undefined): string | undefined {
+  if (!url) return url;
+  const qIndex = url.indexOf('?');
+  return qIndex === -1 ? url : url.slice(0, qIndex);
+}
 
 /**
  * Whitelist propagated fields from Help Scout Docs error bodies before
@@ -214,15 +226,15 @@ export class HelpScoutDocsClient {
         };
       }
       
-      const requestId = Math.random().toString(36).substring(7);
+      const requestId = crypto.randomBytes(8).toString('hex');
       config.metadata = { requestId, startTime: Date.now() };
-      
+
       logger.debug('Docs API request', {
         requestId,
         method: config.method?.toUpperCase(),
-        url: config.url,
+        url: stripQueryString(config.url),
       });
-      
+
       return config;
     });
 
@@ -271,7 +283,7 @@ export class HelpScoutDocsClient {
 
   private transformError(error: AxiosError): ApiError {
     const requestId = error.config?.metadata?.requestId || 'unknown';
-    const url = error.config?.url;
+    const url = stripQueryString(error.config?.url);
     const method = error.config?.method?.toUpperCase();
 
     if (error.response?.status === 401) {
