@@ -311,6 +311,15 @@ export class HelpScoutClient {
       this.tokenExpiresAt = Date.now() + (response.data.expires_in * 1000) - 60000; // 1 minute buffer
 
       logger.info('Authenticated with Help Scout API using OAuth2 Client Credentials');
+
+      // Optional: log just the rotation event (timestamp + expires_in)
+      // when LOG_TOKEN_ROTATIONS=true. Never logs the token itself.
+      if (process.env.LOG_TOKEN_ROTATIONS === 'true') {
+        logger.info('OAuth2 token rotated', {
+          rotatedAt: new Date().toISOString(),
+          expiresInSeconds: response.data.expires_in,
+        });
+      }
     } catch (error) {
       logger.error('OAuth2 authentication failed', { error: error instanceof Error ? error.message : String(error) });
       throw new Error('Failed to authenticate with Help Scout API. Check your OAuth2 credentials.');
@@ -548,19 +557,27 @@ export class HelpScoutClient {
   }
 
   /**
-   * Gracefully close all connections in the pool
+   * Gracefully close all connections in the pool and zero out the
+   * in-memory access token so a process-memory dump after shutdown
+   * cannot recover it.
    */
   async closePool(): Promise<void> {
     logger.info('Closing HTTP connection pool');
-    
+
     // Agent.destroy() is synchronous and immediately closes connections
     // so we don't need to wait for async callbacks
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
-    
+
+    // Zero out the OAuth2 token before exit. JS strings are immutable
+    // so the underlying buffer may persist until GC, but the reference
+    // is gone and any future request will re-auth with a fresh token.
+    this.accessToken = null;
+    this.tokenExpiresAt = 0;
+
     // Give a small delay to ensure connections are cleaned up
     await this.sleep(100);
-    
+
     logger.info('All HTTP connections closed');
   }
 
