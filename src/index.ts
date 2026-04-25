@@ -11,7 +11,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import { validateConfig, config } from './utils/config.js';
-import { logger } from './utils/logger.js';
+import { logger, redactArgs } from './utils/logger.js';
 import { helpScoutClient, type PaginatedResponse } from './utils/helpscout-client.js';
 import { resourceHandler } from './resources/index.js';
 import { toolHandler } from './tools/index.js';
@@ -164,7 +164,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use searchInboxes with an empt
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logger.debug('Calling tool', {
         name: request.params.name,
-        arguments: request.params.arguments
+        arguments: redactArgs(request.params.arguments)
       });
       return await toolHandler.callTool(request);
     });
@@ -185,7 +185,7 @@ Note: Inbox auto-discovery failed (${safeError}). Use searchInboxes with an empt
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       logger.debug('Getting prompt', {
         name: request.params.name,
-        arguments: request.params.arguments
+        arguments: redactArgs(request.params.arguments)
       });
       return await promptHandler.getPrompt(request);
     });

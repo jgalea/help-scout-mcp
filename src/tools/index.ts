@@ -6,7 +6,7 @@ import { ServiceContainer } from '../utils/service-container.js';
 import { DocsToolHandler } from './docs-tools.js';
 import { ReportsToolHandler } from './reports-tools.js';
 import { compactTool } from './tool-utils.js';
-import { logger } from '../utils/logger.js';
+import { logger, redactArgs } from '../utils/logger.js';
 import { config, isVerbose } from '../utils/config.js';
 import { cache } from '../utils/cache.js';
 import { z } from 'zod';
@@ -784,7 +784,7 @@ export class ToolHandler {
     logger.info('Tool call started', {
       requestId,
       toolName: request.params.name,
-      arguments: request.params.arguments,
+      arguments: redactArgs(request.params.arguments),
     });
 
     // REVERSE LOGIC VALIDATION: Check API constraints before making the call

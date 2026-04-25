@@ -97,4 +97,49 @@ describe('Logger', () => {
       expect(logString).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     });
   });
+
+  describe('redactArgs', () => {
+    it('redacts top-level PII string fields by length', async () => {
+      const { redactArgs } = await import('../utils/logger.js');
+      const out = redactArgs({
+        conversationId: '12345',
+        text: 'Hello world',
+        customerEmail: 'user@example.com',
+      }) as Record<string, unknown>;
+      expect(out.conversationId).toBe('12345');
+      expect(out.text).toBe('[REDACTED 11 chars]');
+      expect(out.customerEmail).toBe('[REDACTED 16 chars]');
+    });
+
+    it('redacts non-string PII fields with a generic marker', async () => {
+      const { redactArgs } = await import('../utils/logger.js');
+      const out = redactArgs({
+        cc: ['a@example.com', 'b@example.com'],
+        customer: { id: 7 },
+      }) as Record<string, unknown>;
+      expect(out.cc).toBe('[REDACTED]');
+      expect(out.customer).toBe('[REDACTED]');
+    });
+
+    it('recursively redacts nested objects but keeps non-PII shape', async () => {
+      const { redactArgs } = await import('../utils/logger.js');
+      const out = redactArgs({
+        threads: [
+          { type: 'customer', text: 'secret message', draft: true },
+        ],
+      }) as Record<string, unknown>;
+      const threads = out.threads as Array<Record<string, unknown>>;
+      expect(threads[0].type).toBe('customer');
+      expect(threads[0].draft).toBe(true);
+      expect(threads[0].text).toBe('[REDACTED 14 chars]');
+    });
+
+    it('returns primitives and null/undefined unchanged', async () => {
+      const { redactArgs } = await import('../utils/logger.js');
+      expect(redactArgs(null)).toBeNull();
+      expect(redactArgs(undefined)).toBeUndefined();
+      expect(redactArgs('plain')).toBe('plain');
+      expect(redactArgs(42)).toBe(42);
+    });
+  });
 });
