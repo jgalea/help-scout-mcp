@@ -88,7 +88,34 @@ The MCP binary never sees a credential string in `args` or `argv`, and `.mcp.jso
 
 Use the same launcher pattern, replacing `security find-generic-password` with your secret manager's CLI.
 
-**3. Plain env vars or `.env` files**
+**3. Native Keychain (macOS only — no launcher required)**
+
+Set `HELPSCOUT_USE_KEYCHAIN=true` and the MCP server reads credentials directly from Keychain at startup, skipping the launcher script entirely.
+
+```bash
+# One-time: store in Keychain (same as Pattern 1)
+security add-generic-password -s claude-helpscout-app-id -w 'YOUR_APP_ID' -U
+security add-generic-password -s claude-helpscout-app-secret -w 'YOUR_APP_SECRET' -U
+```
+
+```json
+{
+  "mcpServers": {
+    "helpscout": {
+      "command": "node",
+      "args": ["/absolute/path/to/help-scout-mcp/dist/index.js"],
+      "env": {
+        "HELPSCOUT_USE_KEYCHAIN": "true",
+        "HELPSCOUT_WRITE_INBOX_ALLOWLIST": "12345,67890"
+      }
+    }
+  }
+}
+```
+
+When enabled, Keychain values take precedence over `HELPSCOUT_APP_ID` / `HELPSCOUT_APP_SECRET` env vars. On non-macOS platforms the server fails fast with a clear error — use Pattern 1 or 2 instead. Override the service names with `HELPSCOUT_KEYCHAIN_ID_SERVICE` / `HELPSCOUT_KEYCHAIN_SECRET_SERVICE` if you've stored under different keys.
+
+**4. Plain env vars or `.env` files**
 
 Acceptable for local development. **Do not** put credentials in:
 
@@ -144,6 +171,7 @@ Set `HELPSCOUT_DISABLE_DOCS=true` to hide all Docs tools.
 |----------|-------------|
 | `HELPSCOUT_APP_ID` | OAuth2 App ID from Help Scout → My Apps. Min 24 chars (validated). |
 | `HELPSCOUT_APP_SECRET` | OAuth2 App Secret. Min 24 chars (validated). |
+| `HELPSCOUT_USE_KEYCHAIN` | macOS only. Set to `true` to read `HELPSCOUT_APP_ID` / `HELPSCOUT_APP_SECRET` from the Keychain at startup. Service names default to `claude-helpscout-app-id` / `claude-helpscout-app-secret` (override with `HELPSCOUT_KEYCHAIN_ID_SERVICE` / `HELPSCOUT_KEYCHAIN_SECRET_SERVICE`). When set, Keychain values override env vars. |
 
 ### Write-tool authorization (default-deny)
 

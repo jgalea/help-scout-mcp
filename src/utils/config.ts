@@ -1,8 +1,80 @@
 import dotenv from 'dotenv';
+import { execFileSync } from 'node:child_process';
 
 // Only load .env in non-test environments
 if (process.env.NODE_ENV !== 'test') {
   dotenv.config();
+}
+
+/**
+ * Read a secret from the macOS Keychain using the `security` CLI.
+ * Returns the trimmed value, or null if the lookup fails (item missing,
+ * `security` not available, etc.). Never throws.
+ *
+ * The Keychain path is preferred over env vars when both are present:
+ * env vars leak via `ps`, `/proc`, and Docker / launchd inspection;
+ * Keychain values stay local to the user session.
+ */
+function readKeychainSecret(service: string): string | null {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const value = execFileSync('security', ['find-generic-password', '-s', service, '-w'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve OAuth2 credentials from the macOS Keychain when
+ * HELPSCOUT_USE_KEYCHAIN=true. Mutates `config.helpscout` in place.
+ *
+ * Service names default to claude-helpscout-app-id and
+ * claude-helpscout-app-secret; override with
+ * HELPSCOUT_KEYCHAIN_ID_SERVICE / HELPSCOUT_KEYCHAIN_SECRET_SERVICE.
+ *
+ * Throws when:
+ * - the platform is not darwin (Keychain is macOS-only),
+ * - either secret is missing from the Keychain,
+ * - the `security` CLI fails for any other reason.
+ *
+ * Keychain values always win over env vars when this resolver is engaged,
+ * so a leaking env doesn't override the secure path.
+ */
+function loadCredentialsFromKeychain(): void {
+  if (process.env.HELPSCOUT_USE_KEYCHAIN !== 'true') return;
+
+  if (process.platform !== 'darwin') {
+    throw new Error(
+      'HELPSCOUT_USE_KEYCHAIN=true is only supported on macOS. ' +
+      `Current platform: ${process.platform}. ` +
+      'Use a launcher script or secret manager on other platforms.'
+    );
+  }
+
+  const idService = process.env.HELPSCOUT_KEYCHAIN_ID_SERVICE || 'claude-helpscout-app-id';
+  const secretService = process.env.HELPSCOUT_KEYCHAIN_SECRET_SERVICE || 'claude-helpscout-app-secret';
+
+  const id = readKeychainSecret(idService);
+  const secret = readKeychainSecret(secretService);
+
+  if (!id || !secret) {
+    const missing: string[] = [];
+    if (!id) missing.push(idService);
+    if (!secret) missing.push(secretService);
+    throw new Error(
+      `HELPSCOUT_USE_KEYCHAIN=true but Keychain is missing: ${missing.join(', ')}.\n\n` +
+      'Store credentials with:\n' +
+      `  security add-generic-password -s ${idService} -w 'YOUR_APP_ID' -U\n` +
+      `  security add-generic-password -s ${secretService} -w 'YOUR_APP_SECRET' -U`
+    );
+  }
+
+  config.helpscout.clientId = id;
+  config.helpscout.clientSecret = secret;
 }
 
 export interface Config {
@@ -150,6 +222,11 @@ export function getWriteDocsSiteAllowlist(): string[] | null {
 }
 
 export function validateConfig(): void {
+  // If the operator opted into the Keychain path, resolve credentials
+  // before any other check — this lets validation enforce APP_ID/SECRET
+  // presence regardless of env-var state.
+  loadCredentialsFromKeychain();
+
   // Check if user is trying to use deprecated Personal Access Token
   if (process.env.HELPSCOUT_API_KEY?.startsWith('Bearer ')) {
     throw new Error(

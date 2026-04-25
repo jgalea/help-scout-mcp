@@ -224,4 +224,97 @@ describe('Config Validation', () => {
       expect(isWriteDocsSiteAllowed(undefined)).toBe(false);
     });
   });
+
+  describe('HELPSCOUT_USE_KEYCHAIN', () => {
+    const originalPlatform = process.platform;
+
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      jest.unmock('node:child_process');
+    });
+
+    it('does nothing when HELPSCOUT_USE_KEYCHAIN is unset (env vars used)', async () => {
+      delete process.env.HELPSCOUT_USE_KEYCHAIN;
+      process.env.HELPSCOUT_APP_ID = 'env-app-id';
+      process.env.HELPSCOUT_APP_SECRET = 'env-secret-of-realistic-length-32';
+
+      jest.resetModules();
+      const { validateConfig, config } = await import('../utils/config.js');
+      expect(() => validateConfig()).not.toThrow();
+      expect(config.helpscout.clientId).toBe('env-app-id');
+      expect(config.helpscout.clientSecret).toBe('env-secret-of-realistic-length-32');
+    });
+
+    it('reads credentials from Keychain when set, overriding env vars', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      process.env.HELPSCOUT_USE_KEYCHAIN = 'true';
+      process.env.HELPSCOUT_APP_ID = 'env-id';
+      process.env.HELPSCOUT_APP_SECRET = 'env-secret-of-realistic-length-32';
+
+      jest.resetModules();
+      jest.doMock('node:child_process', () => ({
+        execFileSync: (_cmd: string, args: string[]) => {
+          const i = args.indexOf('-s');
+          const service = args[i + 1];
+          if (service === 'claude-helpscout-app-id') return 'kc-app-id';
+          if (service === 'claude-helpscout-app-secret') return 'kc-secret-of-realistic-length-32';
+          throw new Error(`unexpected service ${service}`);
+        },
+      }));
+
+      const { validateConfig, config } = await import('../utils/config.js');
+      expect(() => validateConfig()).not.toThrow();
+      expect(config.helpscout.clientId).toBe('kc-app-id');
+      expect(config.helpscout.clientSecret).toBe('kc-secret-of-realistic-length-32');
+    });
+
+    it('honors custom service names via HELPSCOUT_KEYCHAIN_*_SERVICE', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      process.env.HELPSCOUT_USE_KEYCHAIN = 'true';
+      process.env.HELPSCOUT_KEYCHAIN_ID_SERVICE = 'custom-id-service';
+      process.env.HELPSCOUT_KEYCHAIN_SECRET_SERVICE = 'custom-secret-service';
+
+      jest.resetModules();
+      jest.doMock('node:child_process', () => ({
+        execFileSync: (_cmd: string, args: string[]) => {
+          const i = args.indexOf('-s');
+          const service = args[i + 1];
+          if (service === 'custom-id-service') return 'custom-id';
+          if (service === 'custom-secret-service') return 'custom-secret-of-realistic-length-32';
+          throw new Error(`unexpected service ${service}`);
+        },
+      }));
+
+      const { validateConfig, config } = await import('../utils/config.js');
+      expect(() => validateConfig()).not.toThrow();
+      expect(config.helpscout.clientId).toBe('custom-id');
+      expect(config.helpscout.clientSecret).toBe('custom-secret-of-realistic-length-32');
+    });
+
+    it('throws a clear error when Keychain entries are missing', async () => {
+      Object.defineProperty(process, 'platform', { value: 'darwin' });
+      process.env.HELPSCOUT_USE_KEYCHAIN = 'true';
+
+      jest.resetModules();
+      jest.doMock('node:child_process', () => ({
+        execFileSync: () => {
+          const err = new Error('The specified item could not be found in the keychain.');
+          throw err;
+        },
+      }));
+
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/Keychain is missing/);
+      expect(() => validateConfig()).toThrow(/security add-generic-password/);
+    });
+
+    it('throws on non-darwin platforms with a clear error', async () => {
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      process.env.HELPSCOUT_USE_KEYCHAIN = 'true';
+
+      jest.resetModules();
+      const { validateConfig } = await import('../utils/config.js');
+      expect(() => validateConfig()).toThrow(/only supported on macOS/);
+    });
+  });
 });
