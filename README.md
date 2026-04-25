@@ -195,6 +195,7 @@ Set `HELPSCOUT_DISABLE_DOCS=true` to hide all Docs tools.
 | `REDACT_MESSAGE_CONTENT` | Hide message bodies in tool responses. | `false` |
 | `CACHE_TTL_SECONDS` | Cache TTL for API responses. | `300` |
 | `LOG_LEVEL` | `error`, `warn`, `info`, `debug`. **Do not use `debug` in environments that ship logs off-host** — it includes URL paths and IDs. | `info` |
+| `LOG_FORMAT` | `json` (default) or `text`. JSON emits single-line entries with `timestamp`, `level`, `msg` and structured context — compatible with Datadog / Better Stack / CloudWatch / journald. `text` is for local dev. | `json` |
 | `LOG_TOKEN_ROTATIONS` | Set to `true` to log timestamp + `expires_in` on each OAuth token rotation. Never logs the token itself. | `false` |
 
 ## Security
