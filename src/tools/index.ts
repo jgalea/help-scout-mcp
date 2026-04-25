@@ -1723,8 +1723,10 @@ export class ToolHandler {
 
   private async getAttachment(args: unknown): Promise<CallToolResult> {
     const input = z.object({
-      attachmentId: z.string(),
-      conversationId: z.string(),
+      // Constrain to opaque-id charset so neither component can become a
+      // path traversal payload when interpolated into URLs or temp paths.
+      attachmentId: z.string().regex(/^[A-Za-z0-9_-]+$/, 'attachmentId must match [A-Za-z0-9_-]+'),
+      conversationId: z.string().regex(/^[A-Za-z0-9_-]+$/, 'conversationId must match [A-Za-z0-9_-]+'),
       filename: z.string().optional(),
     }).parse(args);
 
@@ -1744,11 +1746,19 @@ export class ToolHandler {
 
       // Decode base64 data
       const buffer = Buffer.from(response.data, 'base64');
-      const filename = input.filename || `attachment-${input.attachmentId}`;
+      const rawFilename = input.filename || `attachment-${input.attachmentId}`;
 
       // Detect mime type and prepare file path
       const path = await import('path');
-      const ext = path.extname(filename).toLowerCase();
+
+      // Sanitize the leaf filename: drop any directory component, leading
+      // dots, and anything outside [A-Za-z0-9._-]. This blocks payloads
+      // like "../../../../etc/passwd" or "..\\..\\..\\windows\\system32".
+      const safeName = path.basename(rawFilename)
+        .replace(/^\.+/, '')
+        .replace(/[^A-Za-z0-9._-]/g, '_');
+
+      const ext = path.extname(safeName).toLowerCase();
       const mimeType = detectMimeType(buffer, ext);
 
       // For images, return as native MCP image content so the AI can see them directly
@@ -1765,7 +1775,7 @@ export class ToolHandler {
               text: JSON.stringify({
                 attachmentId: input.attachmentId,
                 conversationId: input.conversationId,
-                filename,
+                filename: safeName,
                 size: buffer.length,
                 mimeType,
               }),
@@ -1774,13 +1784,20 @@ export class ToolHandler {
         };
       }
 
-      // For non-images, write to temp file with correct extension
+      // For non-images, write to temp file with correct extension.
+      // Resolve the absolute boundary directory and verify the final path
+      // stays inside it before writing — defense in depth on top of the
+      // basename() + charset filter above. mode 0o700/0o600 keeps other
+      // local users from reading customer attachments off /tmp.
       const fs = await import('fs');
-      const dir = path.join('/tmp', 'helpscout-attachments', input.conversationId);
-      fs.mkdirSync(dir, { recursive: true });
+      const dir = path.resolve('/tmp', 'helpscout-attachments', input.conversationId);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       const missingExt = !ext ? extForMime(mimeType) : '';
-      const filePath = path.join(dir, `${filename}${missingExt}`);
-      fs.writeFileSync(filePath, buffer);
+      const filePath = path.resolve(dir, `${safeName}${missingExt}`);
+      if (filePath !== dir && !filePath.startsWith(dir + path.sep)) {
+        throw new Error('Refusing to write attachment outside the attachment directory');
+      }
+      fs.writeFileSync(filePath, buffer, { mode: 0o600 });
 
       return {
         content: [{
@@ -1788,7 +1805,7 @@ export class ToolHandler {
           text: JSON.stringify({
             attachmentId: input.attachmentId,
             conversationId: input.conversationId,
-            filename,
+            filename: safeName,
             filePath,
             size: buffer.length,
             mimeType,
