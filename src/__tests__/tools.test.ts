@@ -2188,6 +2188,168 @@ describe('ToolHandler', () => {
       const result = await toolHandler.callTool(request);
       expect(result.isError).toBeUndefined();
     });
+
+    // Edge cases that lock in cheerio-based DOM manipulation. The old
+    // regex-based implementation handled some of these by accident; this
+    // suite ensures the new parse-then-format approach matches.
+
+    it('should drop attributes from <p> tags when unwrapping (cheerio strips on replace)', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // <p class="x" id="y"> opening should be gone, content preserved
+          return body.text === 'Hello<br><br>World<br><br>'
+            // permit either trimmed-trailing or full pattern depending on later passes
+            || body.text === 'Hello<br><br>World';
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p class="lead" id="intro">Hello</p><p data-x="y">World</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should preserve text-node content with literal < and > when not in tags', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // sanitize-html runs first and HTML-encodes stray <, >. We
+          // assert the encoded form survives our reshaping.
+          return body.text.includes('1 &lt; 2') && body.text.includes('3 &gt; 0');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p>1 < 2 and 3 > 0</p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should handle nested <pre><code> with surrounding whitespace', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // Inner whitespace and trailing \n inside the code block become <br>s
+          return body.text.includes('<div>') &&
+                 body.text.includes('first<br>second<br>') &&
+                 !body.text.includes('<pre>') &&
+                 !body.text.includes('<code>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<pre>\n<code>first\nsecond\n</code>\n</pre>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should not double-add inline-code class when class attr exists', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // existing class kept verbatim, no second class= attr injected
+          const matchesExisting = (body.text.match(/<code class="existing">/g) || []).length;
+          const matchesInline = (body.text.match(/<code class="inline-code">/g) || []).length;
+          return matchesExisting === 1 && matchesInline === 1;
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<code class="existing">A</code> <code>B</code>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should not introduce block tags for whitespace-only input', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // Whitespace alone, after \n→<br> and trailing-trim, should not
+          // gain any block-level tag — only optionally <br>s, since the
+          // input has no real content.
+          const t: string = body.text;
+          return !t.includes('<p>') && !t.includes('<div>') && !t.includes('<pre>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '   \n  \n  ',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it('should handle <p> with inline children unwrapping cleanly', async () => {
+      nock(baseURL)
+        .post('/conversations/1/reply', (body: any) => {
+          // Inline children stay intact; <p> wrapper removed; trailing
+          // <br><br> appended (then any subsequent trim).
+          return body.text.includes('<strong>Hi</strong> <em>there</em>') &&
+                 !body.text.includes('<p>') &&
+                 !body.text.includes('</p>');
+        })
+        .reply(201, '', { 'resource-id': '1' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '1',
+            text: '<p><strong>Hi</strong> <em>there</em></p>',
+            customer: { id: 1 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+    });
   });
 
   describe('getConversation', () => {

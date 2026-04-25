@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import TurndownService from 'turndown';
 import { detectMimeType, extForMime, isImageMime } from '../utils/mime.js';
 import { sanitizeReplyHtml } from '../utils/html-sanitize.js';
+import * as cheerio from 'cheerio';
 
 /**
  * Constants for tool operations
@@ -2234,30 +2235,64 @@ export class ToolHandler {
     };
   }
 
+  /**
+   * Reshape sanitized reply HTML for Help Scout's editor.
+   *
+   * The structural transformations (<pre> → <div>, bare <code> class
+   * tagging, <p> unwrap → <br><br>) run as cheerio DOM operations so
+   * malformed inputs and weird attribute combinations can't trick the
+   * regex engine into reintroducing dangerous strings (audit Low #5).
+   * The remaining transforms are pure text shaping over output we
+   * generated ourselves (newline → <br>, <br> adjacency cleanup), so
+   * regex on the serialized output is safe.
+   *
+   * Input MUST already be sanitize-html-cleaned. This function is not a
+   * security boundary on its own.
+   */
   private formatReplyHtml(html: string, compact: boolean): string {
-    let result = html;
+    // 1. DOM transforms via cheerio (fragment mode — no <html><body> wrapper).
+    const $ = cheerio.load(html, null, false);
 
-    // Convert <pre> to <div> (Help Scout strips <pre> tags)
-    result = result.replace(/<pre[^>]*>(?:\s*<code[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>/gi,
-      (_match, content: string) => `<div>${content.replace(/\n/g, '<br>')}</div>`);
+    // <pre> (with optional inner <code>) → <div> with \n inside content
+    // converted to <br>. Help Scout strips <pre> in their editor.
+    $('pre').each((_, el) => {
+      const text = $(el).text();
+      const withBreaks = text.replace(/\n/g, '<br>');
+      $(el).replaceWith(`<div>${withBreaks}</div>`);
+    });
 
-    // Add inline-code class to bare <code> tags (not inside <div> code blocks, already converted)
-    result = result.replace(/<code(?![^>]*\bclass\b)([^>]*)>/gi, '<code class="inline-code"$1>');
+    // Bare <code> (any remaining — pre/code blocks are gone above) gets
+    // class="inline-code" if it has no class set yet.
+    $('code').each((_, el) => {
+      if (!$(el).attr('class')) {
+        $(el).attr('class', 'inline-code');
+      }
+    });
 
-    // Convert plain newlines to <br> (LLMs typically output \n, not HTML tags).
-    // Strip \n immediately after block-level closing tags (just formatting whitespace),
-    // then convert remaining \n to <br>. Double \n becomes a paragraph break.
+    // <p> unwrap: replace each <p>X</p> with X<br><br>. Same as the old
+    // regex but attribute-safe.
+    $('p').each((_, el) => {
+      const inner = $(el).html() ?? '';
+      $(el).replaceWith(`${inner}<br><br>`);
+    });
+
+    let result = $.html();
+
+    // 2. Text-level shaping over the serialized output. These operate on
+    // <br> sequences and adjacent block tags — the structures here are
+    // either literal markers we just emitted or tags from a sanitizer
+    // allowlist. No untrusted attribute strings reach these regexes.
+
+    // Strip \n immediately after block-level closing tags (just
+    // formatting whitespace), then convert remaining \n to <br>. Double
+    // \n becomes a paragraph break.
     result = result.replace(/(<\/(?:p|div|ul|ol|li|blockquote|h[1-6]|tr|table)>)\n/gi, '$1');
     result = result.replace(/\n\n/g, '<br><br>');
     result = result.replace(/\n/g, '<br>');
 
-    // Convert paragraphs to line breaks
-    result = result.replace(/<p[^>]*>/gi, '');
-    result = result.replace(/<\/p>/gi, '<br><br>');
-
-    // Normalize spacing around block elements
+    // Normalize spacing around block elements.
     const blocks = 'ul|ol|blockquote|div';
-    result = result.replace(new RegExp(`(<br>)+\\s*(<(ul|ol|div)[^>]*>)`, 'gi'), '$2');
+    result = result.replace(/(<br>)+\s*(<(?:ul|ol|div)[^>]*>)/gi, '$2');
     if (compact) {
       result = result.replace(/(<br>)+\s*(<blockquote[^>]*>)/gi, '$2');
       result = result.replace(new RegExp(`(</(${blocks})>)\\s*(<br>)*`, 'gi'), '$1');
