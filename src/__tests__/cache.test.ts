@@ -84,6 +84,25 @@ describe('Cache', () => {
       expect(cache.get('key1', {})).toBeUndefined();
       expect(cache.get('key2', {})).toBeUndefined();
     });
+
+    it('should clear only entries with the specified prefix', () => {
+      cache.set('GET:/conversations', { page: 1 }, { data: 'a' });
+      cache.set('GET:/conversations', { page: 2 }, { data: 'b' });
+      cache.set('GET:/mailboxes', { page: 1 }, { data: 'c' });
+
+      cache.clear('GET:/conversations');
+
+      expect(cache.get('GET:/conversations', { page: 1 })).toBeUndefined();
+      expect(cache.get('GET:/conversations', { page: 2 })).toBeUndefined();
+      // Other prefix should be untouched
+      expect(cache.get('GET:/mailboxes', { page: 1 })).toEqual({ data: 'c' });
+    });
+
+    it('should not error when clearing an unknown prefix', () => {
+      cache.set('GET:/mailboxes', { page: 1 }, { data: 'c' });
+      expect(() => cache.clear('GET:/never-set')).not.toThrow();
+      expect(cache.get('GET:/mailboxes', { page: 1 })).toEqual({ data: 'c' });
+    });
   });
 
   describe('parameter hashing', () => {
