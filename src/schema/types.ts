@@ -88,7 +88,10 @@ export const SearchInboxesInputSchema = z.object({
 
 export const SearchConversationsInputSchema = z.object({
   // --- Simple search / listing ---
-  query: z.string().optional(),
+  // Cap at 1024 chars: defends against runaway query strings hitting
+  // Help Scout's 414 URI limit and against accidental retry loops on
+  // malformed input.
+  query: z.string().max(1024).optional(),
   inboxId: z.string().optional(),
   tag: z.string().optional(),
   status: z.enum(['active', 'pending', 'closed', 'spam']).optional(),

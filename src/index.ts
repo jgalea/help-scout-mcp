@@ -72,8 +72,13 @@ export class HelpScoutMCPServer {
       });
       const inboxes = response._embedded?.mailboxes || [];
 
+      // Optional: hide inbox names from the MCP client's `instructions`
+      // payload. Names appear in connect-time context and get logged /
+      // exported in MCP transcripts. Set HELPSCOUT_HIDE_INBOX_NAMES=true
+      // to emit IDs only.
+      const hideNames = process.env.HELPSCOUT_HIDE_INBOX_NAMES === 'true';
       const inboxList = inboxes.map(inbox =>
-        `  - "${inbox.name}" (ID: ${inbox.id})`
+        hideNames ? `  - (ID: ${inbox.id})` : `  - "${inbox.name}" (ID: ${inbox.id})`
       ).join('\n');
 
       const docsRow = config.helpscout.disableDocs ? '' : '\n| Browse/search Docs articles | listDocsArticles, searchDocsArticles |';
