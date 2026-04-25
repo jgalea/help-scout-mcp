@@ -7,6 +7,19 @@ import { logger } from './logger.js';
 import { cache } from './cache.js';
 import { ApiError } from '../schema/types.js';
 
+/**
+ * Whitelist propagated fields from Help Scout Docs error bodies before
+ * they flow into MCP tool results. See helpscout-client.ts for context.
+ */
+function safeApiResponse(data: unknown): { code?: unknown; message?: string } | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const d = data as Record<string, unknown>;
+  return {
+    code: d.code,
+    message: typeof d.message === 'string' ? d.message.slice(0, 200) : undefined,
+  };
+}
+
 interface RequestMetadata {
   requestId: string;
   startTime: number;
@@ -324,7 +337,9 @@ export class HelpScoutDocsClient {
           requestId,
           url,
           method,
-          validationErrors: responseData.errors || responseData,
+          // Surface only safe top-level fields; do not propagate
+          // responseData.errors, which may echo input PII.
+          apiResponse: safeApiResponse(responseData),
           suggestion: 'Check the request parameters match Help Scout Docs API requirements',
         },
       };
@@ -340,7 +355,7 @@ export class HelpScoutDocsClient {
           url,
           method,
           statusCode: error.response.status,
-          apiResponse: responseData,
+          apiResponse: safeApiResponse(responseData),
         },
       };
     }
