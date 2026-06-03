@@ -1939,6 +1939,126 @@ describe('ToolHandler', () => {
       expect(response.details.errors).toContain('text is required');
       expect(response.details.errors).toContain('customer is required');
     });
+
+    it('should NOT report success when the write is unconfirmed (no resource-id header)', async () => {
+      // Help Scout returns 201 but without a resource-id header. The thread
+      // is not confirmed created — we must not claim success.
+      nock(baseURL)
+        .post('/conversations/12345/reply')
+        .reply(201, '');
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Thanks for reaching out!</p>',
+            customer: { id: 789 },
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBe(true);
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(false);
+      expect(response.threadId).toBeNull();
+      expect(response.message).not.toContain('created successfully');
+      expect(response.message).toMatch(/could not be confirmed/i);
+    });
+
+    it('should NOT report success on an unconfirmed send (non-draft, no resource-id)', async () => {
+      process.env.HELPSCOUT_ALLOW_SEND_REPLY = 'true';
+
+      nock(baseURL)
+        .post('/conversations/12345/reply', (body: any) => body.draft === false)
+        .reply(201, '');
+
+      const freshHandler = new ToolHandler();
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createReply',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Sent reply</p>',
+            customer: { id: 789 },
+            draft: false,
+          }
+        }
+      };
+
+      const result = await freshHandler.callTool(request);
+      expect(result.isError).toBe(true);
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(false);
+      expect(response.threadId).toBeNull();
+      expect(response.message).not.toContain('sent successfully');
+
+      delete process.env.HELPSCOUT_ALLOW_SEND_REPLY;
+    });
+  });
+
+  describe('createNote', () => {
+    it('should create a note successfully when a resource-id is returned', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/notes')
+        .reply(201, '', { 'resource-id': '55555' });
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createNote',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Internal context for the team.</p>',
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBeUndefined();
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(true);
+      expect(response.conversationId).toBe('12345');
+      expect(response.threadId).toBe('55555');
+      expect(response.message).toContain('created successfully');
+    });
+
+    it('should NOT report success when the write is unconfirmed (no resource-id header)', async () => {
+      nock(baseURL)
+        .post('/conversations/12345/notes')
+        .reply(201, '');
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createNote',
+          arguments: {
+            conversationId: '12345',
+            text: '<p>Internal context for the team.</p>',
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBe(true);
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(false);
+      expect(response.threadId).toBeNull();
+      expect(response.message).not.toContain('created successfully');
+      expect(response.message).toMatch(/could not be confirmed/i);
+    });
   });
 
   describe('formatReplyHtml (via createReply)', () => {
@@ -2565,6 +2685,38 @@ describe('ToolHandler', () => {
       // API constraints validation catches missing fields before Zod
       expect(response.error).toBe('API Constraint Validation Failed');
       expect(response.details.errors.length).toBeGreaterThan(0);
+    });
+
+    it('should NOT report success when the create is unconfirmed (no resource-id header)', async () => {
+      // 201 with no resource-id header: we never learn the new conversation
+      // id, so the create is unconfirmed and must not be reported as success.
+      nock(baseURL)
+        .post('/conversations')
+        .reply(201, '');
+
+      const request: CallToolRequest = {
+        method: 'tools/call',
+        params: {
+          name: 'createConversation',
+          arguments: {
+            subject: 'New Ticket',
+            type: 'email',
+            mailboxId: 1,
+            customer: { email: 'customer@example.com' },
+            threads: [{ type: 'customer', text: '<p>I need help</p>' }],
+          }
+        }
+      };
+
+      const result = await toolHandler.callTool(request);
+      expect(result.isError).toBe(true);
+
+      const textContent = result.content[0] as { type: 'text'; text: string };
+      const response = JSON.parse(textContent.text);
+      expect(response.success).toBe(false);
+      expect(response.conversationId).toBeNull();
+      expect(response.message).not.toContain('created successfully');
+      expect(response.message).toMatch(/could not be confirmed/i);
     });
   });
 
