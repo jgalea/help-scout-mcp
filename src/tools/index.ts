@@ -2122,6 +2122,26 @@ export class ToolHandler {
     // Invalidate cached conversation lists
     cache.clear('GET:/conversations');
 
+    // Same unconfirmed-write guard as createReply/createNote: a successful
+    // create returns the new conversation id in the `resource-id` header. A
+    // null id means the write was NOT confirmed, so we must not report
+    // success — there's no conversation we can point the caller at.
+    if (!conversationId) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            confirmed: false,
+            conversationId: null,
+            conversation: null,
+            message: 'Conversation create could not be confirmed: Help Scout returned no resource-id, so no conversation is known to have been created. Do NOT assume it was created — search/verify before retrying.',
+          }),
+        }],
+        isError: true,
+      };
+    }
+
     // Fetch the created conversation to return full details
     let conversation: Record<string, unknown> | null = null;
     if (conversationId) {
@@ -2360,6 +2380,31 @@ export class ToolHandler {
 
     const threadId = response.headers['resource-id'] || null;
 
+    // A successful thread creation returns the new thread's id in the
+    // `resource-id` header (HTTP 201). A null id means the write was NOT
+    // confirmed — the request didn't error, but Help Scout never told us a
+    // thread was created. Reporting success here is dangerous: it makes the
+    // caller believe a customer-facing reply landed when it may not have
+    // (reproduced in production: "created successfully" + threadId:null with
+    // nothing on the conversation). Treat a missing id as an unconfirmed
+    // write regardless of draft vs send.
+    if (!threadId) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            confirmed: false,
+            conversationId: input.conversationId,
+            threadId: null,
+            draft: isDraft,
+            message: 'Reply write could not be confirmed: Help Scout returned no resource-id, so no thread is known to have been created. Do NOT assume the reply landed — verify with getThreads/getConversation before retrying.',
+          }),
+        }],
+        isError: true,
+      };
+    }
+
     return {
       content: [{
         type: 'text',
@@ -2400,6 +2445,25 @@ export class ToolHandler {
     );
 
     const threadId = response.headers['resource-id'] || null;
+
+    // Same unconfirmed-write guard as createReply: a null resource-id means
+    // Help Scout never confirmed a note thread was created. Don't report
+    // success — the note may not exist on the conversation.
+    if (!threadId) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            confirmed: false,
+            conversationId: input.conversationId,
+            threadId: null,
+            message: 'Note write could not be confirmed: Help Scout returned no resource-id, so no note thread is known to have been created. Do NOT assume the note landed — verify with getThreads/getConversation before retrying.',
+          }),
+        }],
+        isError: true,
+      };
+    }
 
     return {
       content: [{
