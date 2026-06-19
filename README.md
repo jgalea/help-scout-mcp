@@ -11,7 +11,7 @@
 
 An MCP server that exposes [Help Scout](https://www.helpscout.com/) to AI assistants — search conversations, fetch transcripts, manage Docs articles, pull reports.
 
-This is a **security-hardened private fork** of [`GravityKit/help-scout-mcp`](https://github.com/GravityKit/help-scout-mcp) (which itself forks [`drewburchfield/help-scout-mcp-server`](https://github.com/drewburchfield/help-scout-mcp-server)). The original maintainers wrote the bulk of the code; this fork applies fixes for a private security audit dated 2026-04-25 and switches several defaults to fail-closed.
+This is a **security-hardened fork** of [`GravityKit/help-scout-mcp`](https://github.com/GravityKit/help-scout-mcp) (which itself forks [`drewburchfield/help-scout-mcp-server`](https://github.com/drewburchfield/help-scout-mcp-server)). The original maintainers wrote the bulk of the code; this fork applies fixes for a private security audit dated 2026-04-25 and switches several defaults to fail-closed.
 
 Headline differences from upstream are listed in [SECURITY.md](./SECURITY.md). If you want the original, use `@gravitykit/help-scout-mcp` from npm.
 
