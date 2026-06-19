@@ -1,7 +1,13 @@
-# Help Scout MCP Server
+<p align="center">
+  <img src=".github/assets/header.png" alt="Help Scout MCP Server" width="820">
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://typescriptlang.org/)
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/LICENSE-MIT-5C9E31?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://rebelcode.com"><img src="https://img.shields.io/badge/BUILT%20BY-REBELCODE-8A2BE2?style=for-the-badge" alt="Built by RebelCode"></a>
+</p>
+
+<p align="center"><b>Help Scout for AI agents: search conversations, fetch transcripts, manage Docs, and pull reports, with security-hardened, fail-closed defaults.</b></p>
 
 An MCP server that exposes [Help Scout](https://www.helpscout.com/) to AI assistants — search conversations, fetch transcripts, manage Docs articles, pull reports.
 
